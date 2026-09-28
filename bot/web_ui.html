@@ -134,6 +134,7 @@ function render(d) {
   if (d.sellall_pending) b.push(["⏳", "Perintah jual semua sedang diproses bot."]);
   if (d.halted_today) b.push(["⛔", "Batas rugi harian tercapai — tidak ada pembelian baru sampai besok."]);
   if (d.entries_blocked) b.push(["⚠", "Pembelian dihentikan: " + d.entries_blocked]);
+  if (d.storage_warning) b.push(["⚠", d.storage_warning]);
   if (d.alive === "critical") b.push(["✕", "Bot tidak mengirim update. Cek VPS: sudo systemctl status indodax-bot"]);
   $("banners").innerHTML = b.map(([i, t]) => `<div class="banner"><span class="ico">${i}</span><span>${esc(t)}</span></div>`).join("");
 

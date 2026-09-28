@@ -46,9 +46,13 @@ def load_bootstrap(path: str = "config.yaml") -> dict:
     """config.yaml kini hanya untuk hal yang dibutuhkan sebelum database terbuka."""
     raw = {}
     p = Path(path)
+    if not p.exists() and p.name == "config.yaml" and p.with_name("config.example.yaml").exists():
+        p = p.with_name("config.example.yaml")   # mis. di Railway: config.yaml tidak ikut repo
     if p.exists():
         raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    boot = _merge(BOOT_DEFAULTS, {"data_dir": raw.get("data_dir", "data"),
+    data_dir = (os.environ.get("DATA_DIR", "").strip() or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+                or raw.get("data_dir", "data"))
+    boot = _merge(BOOT_DEFAULTS, {"data_dir": data_dir,
                                   "dashboard": {k: v for k, v in (raw.get("dashboard") or {}).items()
                                                 if k in ("host", "port")}})
     boot["_raw"] = raw

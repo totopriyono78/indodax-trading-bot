@@ -112,7 +112,15 @@ def build_summary(cfg: dict) -> dict:
     risk = cfg["risk"]
     exposure = sum(p.cost_idr for p in st.positions.values() if not p.dust)
     halted = st.halted_day == today_wib(now)
+    storage_warning = None
+    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_ENVIRONMENT_NAME"):
+        if not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+            storage_warning = ("Data bot (posisi, jurnal transaksi" +
+                               ("" if os.environ.get("DATABASE_URL") else ", database pengaturan & API key") +
+                               ") tersimpan di disk sementara Railway dan AKAN HILANG saat redeploy. "
+                               "Tambahkan Volume pada service ini (mount path: /app/data).")
     return {
+        "storage_warning": storage_warning,
         "version": __version__,
         "now": now,
         "mode": cfg["mode"],
@@ -664,11 +672,19 @@ def _test_keys(key: str, secret: str):
 
 def serve(ctx, host: str = None, port: int = None) -> None:
     d = ctx.cfg["dashboard"]
-    host = host or d["host"]
-    port = int(port or d["port"])
+    env_port = os.environ.get("PORT", "").strip()      # Railway / Render / Heroku
+    host = host or os.environ.get("DASHBOARD_HOST", "").strip() or ("0.0.0.0" if env_port else d["host"])
+    port = int(port or env_port or d["port"])
     if not os.environ.get("BOT_MASTER_KEY"):
         log.warning("BOT_MASTER_KEY belum diisi — kredensial tidak bisa disimpan. Jalankan `python -m bot init`.")
     setup_token = {"value": None}
+    admin_u = os.environ.get("ADMIN_USERNAME", "").strip()
+    admin_p = os.environ.get("ADMIN_PASSWORD", "")
+    if ctx.db.count_users() == 0 and admin_u and len(admin_p) >= 10:
+        ctx.db.add_user(admin_u, admin_p)
+        ctx.db.audit(admin_u, "user_add", "admin pertama dari variabel ADMIN_USERNAME/ADMIN_PASSWORD")
+        log.warning("Akun admin '%s' dibuat dari variabel lingkungan. Hapus ADMIN_PASSWORD dari variabel "
+                    "setelah berhasil login.", admin_u)
     if ctx.db.count_users() == 0:
         setup_token["value"] = pysecrets.token_hex(4).upper()
         log.warning("Belum ada akun admin. Buka dashboard dan masukkan KODE SETUP: %s "
@@ -676,7 +692,9 @@ def serve(ctx, host: str = None, port: int = None) -> None:
     httpd = ThreadingHTTPServer((host, port), make_handler(ctx, setup_token))
     shown = "localhost" if _is_loopback(host) else host
     log.info("Dashboard aktif di http://%s:%d", shown, port)
-    if not _is_loopback(host):
+    behind_https_proxy = any(os.environ.get(k) for k in ("RAILWAY_ENVIRONMENT", "RAILWAY_ENVIRONMENT_NAME",
+                                                         "RENDER", "DYNO"))
+    if not _is_loopback(host) and not behind_https_proxy:
         log.warning("Dashboard terbuka ke jaringan tanpa HTTPS. Gunakan reverse proxy HTTPS atau SSH tunnel.")
     try:
         httpd.serve_forever()

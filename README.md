@@ -70,6 +70,32 @@ echo 'DATABASE_URL=postgresql+psycopg://botuser:ganti-password@localhost:5432/in
 .venv/bin/python -m bot init
 ```
 
+### Alternatif: deploy ke Railway
+
+Repo ini sudah berisi `railway.json` (start command `python -m bot all`, health check `/healthz`) dan
+`.python-version`. `python -m bot all` menjalankan dashboard **dan** bot trading dalam satu service; bot
+dinyalakan ulang otomatis jika berhenti atau mode diganti. Railway otomatis memberi HTTPS.
+
+1. **New Project → Deploy from GitHub repo** → pilih repo ini.
+2. **Tambahkan Volume** ke service (klik kanan service → *Attach Volume*), mount path **`/app/data`**.
+   Tanpa volume, posisi, jurnal transaksi (dan database SQLite + API key) **hilang setiap redeploy** —
+   dashboard akan menampilkan peringatan.
+3. (Disarankan) **Add → Database → PostgreSQL**, lalu di variabel service bot isi
+   `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Tanpa ini dipakai SQLite di volume (juga boleh).
+4. **Variables** service bot:
+   - `BOT_MASTER_KEY` = kunci enkripsi. Buat sekali di PC:
+     `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+     dan **simpan cadangannya**. (Jika dikosongkan, kunci dibuat di volume `data/.master_key`.)
+   - `ADMIN_USERNAME` dan `ADMIN_PASSWORD` (min. 10 karakter) untuk akun login pertama —
+     hapus `ADMIN_PASSWORD` setelah berhasil login. (Alternatif: kode setup yang tercetak di *Deploy Logs*.)
+   - `TZ=Asia/Jakarta` (opsional).
+5. **Settings → Networking → Generate Domain**, buka domainnya, login, lalu atur pair, stop loss & API key.
+
+> ⚠️ **IP whitelist Indodax.** Izin *Trade* di TAPI v2 **wajib** memakai IP whitelist. IP keluar Railway
+> berubah-ubah, kecuali Anda memakai **Static Outbound IPs** (khusus **Railway Pro**: Settings → Networking →
+> *Enable Static IPs*, lalu daftarkan **semua** IP yang diberikan di pengaturan API key Indodax).
+> Tanpa itu, di Railway bot hanya bisa berjalan di mode **SIMULASI**; untuk LIVE pakai VPS dengan IP tetap.
+
 ---
 
 ## 3. Dashboard web: login & pengaturan
@@ -147,6 +173,7 @@ State simulasi dan live disimpan terpisah (`data/state_paper.json` vs `data/stat
 | Perintah | Fungsi |
 |---|---|
 | `python -m bot init` | Siapkan database, kunci enkripsi, akun admin (aman dijalankan ulang) |
+| `python -m bot all` | Dashboard + bot dalam satu proses (dipakai Railway / Docker) |
 | `python -m bot user add/passwd/list` | Kelola akun login dashboard |
 | `python -m bot status` | Posisi terbuka, PnL hari ini & total, win rate |
 | `python -m bot pause` / `resume` | Stop / lanjutkan membuka posisi baru |
@@ -217,6 +244,7 @@ bot/
   db.py          database: pengaturan, kredensial terenkripsi, user, sesi, audit
   settings.py    pengaturan dari database + pengaturan per pair
   web.py         dashboard web: login, monitoring, pengaturan (+ *.html, static/)
+  supervisor.py  `bot all`: dashboard + bot dalam satu container (Railway)
 tests/           uji otomatis dengan data & API palsu (python -m pytest)
 deploy/          install.sh & layanan systemd
 ```

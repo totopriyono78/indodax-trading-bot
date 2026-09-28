@@ -98,6 +98,15 @@ def _sha(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def normalize_db_url(url: str) -> str:
+    """Railway/Heroku memberi `postgres://` atau `postgresql://`; SQLAlchemy butuh driver psycopg."""
+    url = (url or "").strip()
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 def generate_master_key() -> str:
     return Fernet.generate_key().decode()
 
@@ -119,7 +128,7 @@ class Database:
 
     @classmethod
     def from_env(cls, data_dir: str = "data") -> "Database":
-        url = os.environ.get("DATABASE_URL", "").strip()
+        url = normalize_db_url(os.environ.get("DATABASE_URL", ""))
         if not url:
             Path(data_dir).mkdir(parents=True, exist_ok=True)
             url = f"sqlite:///{Path(data_dir).resolve() / 'bot.db'}"

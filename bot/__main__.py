@@ -8,6 +8,7 @@
   python -m bot backtest --days 60    uji strategi dengan data historis
   python -m bot backtest --days 90 --sweep   bandingkan kombinasi TP/SL/trailing
   python -m bot web                   dashboard web untuk memantau bot
+  python -m bot all                   dashboard + bot dalam satu proses (Railway / Docker)
   python -m bot pause | resume        hentikan / lanjutkan pembelian baru
   python -m bot sellall               minta bot yang sedang berjalan menjual semua posisinya
 """
@@ -35,17 +36,44 @@ from .notifier import Notifier
 from .state import StateStore, fmt_time, today_wib
 
 
-def setup_logging(data_dir: str, verbose: bool = False) -> None:
+def setup_logging(data_dir: str, verbose: bool = False, filename: str = "bot.log") -> None:
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
-    fh = RotatingFileHandler(Path(data_dir) / "bot.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+    fh = RotatingFileHandler(Path(data_dir) / filename, maxBytes=5_000_000, backupCount=5, encoding="utf-8")
     fh.setFormatter(fmt)
     root.handlers = [sh, fh]
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+def load_master_key_file(data_dir: str, create: bool) -> None:
+    """Jika BOT_MASTER_KEY tidak ada di lingkungan (mis. hosting tanpa .env), pakai/buat data/.master_key.
+
+    Lebih aman mengisi BOT_MASTER_KEY sebagai variabel lingkungan; file ini hanya cadangan agar
+    kredensial tetap bisa disimpan di platform seperti Railway (butuh Volume agar tidak hilang).
+    """
+    import os
+    if os.environ.get("BOT_MASTER_KEY", "").strip():
+        return
+    f = Path(data_dir) / ".master_key"
+    if f.exists():
+        os.environ["BOT_MASTER_KEY"] = f.read_text(encoding="utf-8").strip()
+        return
+    if not create:
+        return
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    f.write_text(generate_master_key(), encoding="utf-8")
+    try:
+        f.chmod(0o600)
+    except OSError:
+        pass
+    os.environ["BOT_MASTER_KEY"] = f.read_text(encoding="utf-8").strip()
+    logging.getLogger("bot").warning(
+        "BOT_MASTER_KEY tidak diset; kunci enkripsi dibuat di %s. Sebaiknya salin isinya ke variabel "
+        "lingkungan BOT_MASTER_KEY dan simpan cadangannya.", f)
 
 
 class Ctx:
@@ -55,7 +83,10 @@ class Ctx:
         load_env(args.env)
         self.env_path = Path(args.env)
         self.boot = load_bootstrap(args.config)
-        setup_logging(self.boot["data_dir"], args.verbose)
+        cmd = getattr(args, "cmd", None)
+        setup_logging(self.boot["data_dir"], args.verbose,
+                      "web.log" if cmd in ("web", "all") else "bot.log")
+        load_master_key_file(self.boot["data_dir"], create=cmd in ("web", "all"))
         self.db = Database.from_env(self.boot["data_dir"])
         self.db.create_all()
         self.svc = SettingsService(self.db, self.boot)
@@ -70,7 +101,7 @@ class Ctx:
         except ConfigError as e:
             log = logging.getLogger("bot")
             cmd = getattr(args, "cmd", None)
-            if cmd == "web":
+            if cmd in ("web", "all"):
                 # dashboard tetap jalan agar pengaturan yang salah bisa diperbaiki dari web
                 log.error("%s", e)
             elif cmd == "run" and self.last_good.exists():
@@ -427,6 +458,7 @@ def main(argv=None):
     b.add_argument("--timeframe", choices=list(TIMEFRAMES))
     b.add_argument("--sweep", action="store_true")
     b.add_argument("--top", type=int, default=10)
+    sub.add_parser("all", help="dashboard + bot dalam satu proses (Railway / Docker)")
     w = sub.add_parser("web")
     w.add_argument("--host")
     w.add_argument("--port", type=int)
@@ -453,6 +485,9 @@ def main(argv=None):
     elif args.cmd == "web":
         from .web import serve
         serve(ctx, args.host, args.port)
+    elif args.cmd == "all":
+        from .supervisor import run_all
+        run_all(ctx, args)
     elif args.cmd == "pause":
         cmd_flag(cfg, "PAUSE", True, "Bot tidak akan membuka posisi baru. Posisi terbuka tetap dijaga TP/SL.")
     elif args.cmd == "resume":

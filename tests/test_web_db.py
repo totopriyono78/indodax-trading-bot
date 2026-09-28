@@ -387,3 +387,31 @@ def test_cannot_switch_to_paper_with_open_live_positions(server):
     st.positions.clear(); store.save(st)
     r = s.put(url + "/api/settings/general", json={"value": {"mode": "paper"}, "password": "password-kuat-1"})
     assert r.status_code == 200
+
+
+def test_railway_helpers(tmp_path, monkeypatch):
+    from bot.db import normalize_db_url
+    assert normalize_db_url("postgresql://u:p@h:5432/db") == "postgresql+psycopg://u:p@h:5432/db"
+    assert normalize_db_url("postgres://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+    assert normalize_db_url("postgresql+psycopg://x") == "postgresql+psycopg://x"
+    assert normalize_db_url("") == ""
+    (tmp_path / "config.example.yaml").write_text("pairs: [solidr]\n")
+    monkeypatch.setenv("RAILWAY_VOLUME_MOUNT_PATH", "/app/data")
+    boot = load_bootstrap(str(tmp_path / "config.yaml"))      # config.yaml tidak ada -> pakai contoh
+    assert boot["data_dir"] == "/app/data" and boot["_raw"]["pairs"] == ["solidr"]
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "d"))
+    assert load_bootstrap(str(tmp_path / "config.yaml"))["data_dir"] == str(tmp_path / "d")
+
+
+def test_master_key_file_fallback(tmp_path, monkeypatch):
+    import os
+    from bot.__main__ import load_master_key_file
+    monkeypatch.delenv("BOT_MASTER_KEY", raising=False)
+    load_master_key_file(str(tmp_path), create=False)
+    assert not os.environ.get("BOT_MASTER_KEY")
+    load_master_key_file(str(tmp_path), create=True)
+    k = os.environ["BOT_MASTER_KEY"]
+    assert (tmp_path / ".master_key").read_text().strip() == k
+    monkeypatch.delenv("BOT_MASTER_KEY")
+    load_master_key_file(str(tmp_path), create=False)          # proses bot membaca kunci yang sama
+    assert os.environ["BOT_MASTER_KEY"] == k
