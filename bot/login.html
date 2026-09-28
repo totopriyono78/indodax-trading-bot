@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Masuk — Bot Indodax</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="card center-card">
+    <h1 style="margin-bottom:4px">Bot Indodax</h1>
+    <p class="muted" id="subtitle" style="margin-top:0">Masuk untuk memantau dan mengatur bot.</p>
+
+    <form id="f" autocomplete="on">
+      <div id="setup-only" hidden>
+        <div class="note">Belum ada akun admin. Masukkan <b>kode setup</b> yang tercetak di log dashboard di VPS:<br>
+          <code>journalctl -u indodax-bot-web -n 30</code></div>
+        <label for="token">Kode setup</label>
+        <input id="token" autocomplete="off" spellcheck="false">
+        <div style="height:12px"></div>
+      </div>
+      <label for="u">Username</label>
+      <input id="u" autocomplete="username" required>
+      <div style="height:12px"></div>
+      <label for="p">Password</label>
+      <input id="p" type="password" autocomplete="current-password" required>
+      <div id="setup-only-2" hidden>
+        <div class="help">Minimal 10 karakter.</div>
+        <div style="height:12px"></div>
+        <label for="p2">Ulangi password</label>
+        <input id="p2" type="password" autocomplete="new-password">
+      </div>
+      <div class="err" id="err"></div>
+      <div class="actions"><button class="primary" id="btn" type="submit" style="width:100%">Masuk</button></div>
+    </form>
+  </div>
+</div>
+<script>
+let SETUP = false;
+(async () => {
+  const r = await fetch("/api/setup-status", { cache: "no-store" });
+  SETUP = (await r.json()).needs_setup;
+  if (SETUP) {
+    document.getElementById("setup-only").hidden = false;
+    document.getElementById("setup-only-2").hidden = false;
+    document.getElementById("subtitle").textContent = "Buat akun admin pertama.";
+    document.getElementById("btn").textContent = "Buat akun & masuk";
+    document.getElementById("p").autocomplete = "new-password";
+    document.getElementById("u").value = "admin";
+  }
+})();
+document.getElementById("f").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const err = document.getElementById("err"); err.textContent = "";
+  const btn = document.getElementById("btn"); btn.disabled = true;
+  const u = document.getElementById("u").value.trim(), p = document.getElementById("p").value;
+  try {
+    if (SETUP) {
+      if (p !== document.getElementById("p2").value) throw new Error("Password tidak sama.");
+      await App.api("POST", "/api/setup", { token: document.getElementById("token").value, username: u, password: p });
+    } else {
+      await App.api("POST", "/api/login", { username: u, password: p });
+    }
+    location.href = "/";
+  } catch (e) {
+    err.textContent = e.message;
+  } finally { btn.disabled = false; }
+};
+</script>
+</body>
+</html>

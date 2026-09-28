@@ -1,74 +1,35 @@
 # ============================================================
-#  Konfigurasi bot trading Indodax
-#  Salin menjadi config.yaml, lalu sesuaikan.
+#  config.yaml — pengaturan awal bot Indodax
+#
+#  Sejak versi 2, SEMUA pengaturan trading (pair, stop loss per pair, modal, strategi, mode,
+#  API key) disimpan di DATABASE dan diubah lewat halaman web  ->  menu "Pengaturan".
+#
+#  File ini hanya dipakai untuk:
+#   1. lokasi data & alamat dashboard (dibaca setiap start), dan
+#   2. nilai AWAL saat database masih kosong (sekali saja, saat `python -m bot init`).
 # ============================================================
 
-# paper = simulasi (harga asli, uang tidak sungguhan)
-# live  = order sungguhan di akun Indodax Anda
-mode: paper
+data_dir: data           # log, database SQLite, state posisi, jurnal transaksi
 
-# Pair yang dipantau (format id Indodax, market IDR)
-pairs:
-  - btcidr
-  - ethidr
-  - dogeidr
-  - pepeidr
-  - solidr
-
-timeframe: "15"          # ukuran candle untuk sinyal: 1, 15, 30, 60, 240 (menit), 1D
-poll_seconds: 20         # seberapa sering harga dicek untuk take profit / stop loss
-candles_lookback: 300    # jumlah candle yang dipakai untuk menghitung indikator
-data_dir: data           # tempat log, state, dan jurnal transaksi
-
-# ---------------- Sinyal beli (mengikuti tren) ----------------
-strategy:
-  ema_fast: 9
-  ema_slow: 21
-  ema_trend: 100              # hanya beli jika harga di atas EMA ini (tren besar naik)
-  rsi_period: 14
-  rsi_min: 50                 # momentum minimal
-  rsi_max: 70                 # hindari beli saat sudah jenuh beli
-  require_cross: true         # beli hanya saat EMA cepat BARU memotong ke atas EMA lambat
-  cross_lookback: 3           # "baru" = dalam 3 candle terakhir
-  exit_on_trend_reversal: true  # jual jika EMA cepat turun ke bawah EMA lambat
-
-# ---------------- Aturan jual ----------------
-exits:
-  take_profit_pct: 4.0          # jual saat naik 4% dari harga beli (0 = nonaktif)
-  stop_loss_pct: 2.5            # jual saat turun 2.5% dari harga beli (WAJIB > 0)
-  trailing_stop_pct: 1.5        # jual jika turun 1.5% dari harga tertinggi...
-  trailing_activation_pct: 2.0  # ...setelah posisi sempat untung >= 2%
-  max_hold_hours: 72            # jual jika posisi sudah ditahan selama ini (0 = tanpa batas)
-
-# ---------------- Manajemen risiko ----------------
-risk:
-  idr_per_trade: 100000           # modal per pembelian (min. Rp25.000; cek minimum tiap pair)
-  max_open_positions: 3
-  max_total_exposure_idr: 300000  # total modal yang boleh "tertanam" di posisi bot
-  min_idr_reserve: 0              # saldo IDR yang tidak boleh disentuh bot
-  daily_loss_limit_idr: 50000     # stop beli untuk hari itu jika rugi terealisasi mencapai ini
-  cooldown_minutes_after_loss: 120  # jeda sebelum beli lagi pair yang baru saja rugi
-  max_spread_pct: 0.6             # lewati sinyal jika selisih bid/ask terlalu lebar
-  min_24h_volume_idr: 1000000000  # lewati pair yang terlalu sepi (slippage besar)
-
-# ---------------- Biaya (all-in: trading fee + pajak + CFX) ----------------
-# Sesuaikan dengan tabel "All-in Fees" di menu Profil akun Indodax Anda.
-# Bot memakai order MARKET (taker). Penjualan dikenai PPh 0,21%.
-fees:
-  buy_pct: 0.30
-  sell_pct: 0.51
-
-# ---------------- Mode simulasi ----------------
-paper:
-  starting_idr: 1000000
-  slippage_pct: 0.10              # perkiraan selisih harga eksekusi market order
-
-telegram:
-  enabled: false                  # isi TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di .env
-
-# ---------------- Dashboard web (python -m bot web) ----------------
 dashboard:
   host: 127.0.0.1        # 127.0.0.1 = hanya dari VPS (akses lewat SSH tunnel, paling aman)
-                         # 0.0.0.0   = bisa dibuka dari internet (WAJIB isi DASHBOARD_PASSWORD)
+                         # 0.0.0.0   = bisa dibuka dari internet (pasang HTTPS, lihat README)
   port: 8080
-  allow_control: true    # tampilkan tombol Pause / Lanjutkan / Jual semua
+
+# ---- Nilai awal (hanya dipakai saat database pertama kali dibuat) ----
+mode: paper              # paper = simulasi, live = uang sungguhan
+pairs: [btcidr, ethidr, dogeidr, pepeidr, solidr]
+timeframe: "15"
+
+exits:
+  take_profit_pct: 4.0
+  stop_loss_pct: 2.5
+  trailing_stop_pct: 1.5
+  trailing_activation_pct: 2.0
+  max_hold_hours: 72
+
+risk:
+  idr_per_trade: 100000
+  max_open_positions: 3
+  max_total_exposure_idr: 300000
+  daily_loss_limit_idr: 50000

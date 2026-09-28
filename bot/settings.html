@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pengaturan — Bot Indodax</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <nav class="topnav" id="topnav"></nav>
+  <header>
+    <div>
+      <h1>Pengaturan <span id="mode" class="badge">—</span></h1>
+      <div class="muted" id="dbinfo" style="font-size:13px"></div>
+    </div>
+  </header>
+  <div class="tabs" id="tabs"></div>
+  <div id="panel"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = App.esc;
+let S = null;           // payload /api/settings
+let MARKET = [];        // daftar pair Indodax
+let TAB = (location.hash || "#pairs").slice(1);
+
+const TABS = [
+  ["pairs", "Pair & stop loss"],
+  ["exits", "Stop loss & target umum"],
+  ["risk", "Modal & risiko"],
+  ["strategy", "Strategi"],
+  ["general", "Mode & sistem"],
+  ["indodax", "API key Indodax"],
+  ["telegram", "Telegram"],
+  ["account", "Akun & riwayat"],
+];
+
+const FIELDS = {
+  exits: [
+    ["stop_loss_pct", "Stop loss (%)", "Jual jika harga turun sekian persen dari harga beli. Wajib > 0."],
+    ["take_profit_pct", "Take profit (%)", "Jual saat naik sekian persen. 0 = nonaktif (andalkan trailing / tren)."],
+    ["trailing_stop_pct", "Trailing stop (%)", "Jual jika turun sekian persen dari harga tertinggi. 0 = nonaktif."],
+    ["trailing_activation_pct", "Aktifkan trailing setelah untung (%)", "Trailing stop mulai bekerja setelah posisi untung sebesar ini."],
+    ["max_hold_hours", "Batas lama tahan (jam)", "Jual jika posisi sudah ditahan selama ini. 0 = tanpa batas."],
+  ],
+  risk: [
+    ["idr_per_trade", "Modal per transaksi (Rp)", "Default untuk semua pair; bisa diubah per pair. Minimal Rp25.000."],
+    ["max_open_positions", "Jumlah posisi maksimum", "Berapa koin boleh dipegang bersamaan."],
+    ["max_total_exposure_idr", "Total modal maksimum di posisi (Rp)", "Batas gabungan semua posisi terbuka."],
+    ["min_idr_reserve", "Saldo IDR yang tidak boleh disentuh (Rp)", ""],
+    ["daily_loss_limit_idr", "Batas rugi harian (Rp)", "Jika rugi terealisasi hari ini mencapai ini, bot berhenti membeli sampai besok."],
+    ["cooldown_minutes_after_loss", "Jeda setelah rugi (menit)", "Pair yang baru ditutup rugi tidak dibeli lagi selama ini."],
+    ["max_spread_pct", "Spread maksimum (%)", "Lewati sinyal jika selisih harga beli/jual lebih lebar dari ini."],
+    ["min_24h_volume_idr", "Volume 24 jam minimum (Rp)", "Lewati pair yang terlalu sepi."],
+  ],
+  fees: [
+    ["buy_pct", "Biaya beli all-in (%)", "Cocokkan dengan tabel All-in Fees di akun Indodax."],
+    ["sell_pct", "Biaya jual all-in (%)", "Termasuk PPh 0,21% atas penjualan."],
+  ],
+  paper: [
+    ["starting_idr", "Modal awal simulasi (Rp)", ""],
+    ["slippage_pct", "Perkiraan slippage (%)", ""],
+  ],
+  strategy: [
+    ["ema_fast", "EMA cepat", ""], ["ema_slow", "EMA lambat", ""],
+    ["ema_trend", "EMA tren", "Hanya beli jika harga di atas EMA ini."],
+    ["rsi_period", "Periode RSI", ""], ["rsi_min", "RSI minimum", ""], ["rsi_max", "RSI maksimum", "Hindari beli saat jenuh beli."],
+    ["cross_lookback", "Persilangan EMA dalam N candle terakhir", ""],
+    ["require_cross", "Wajib ada persilangan EMA baru", "", "bool"],
+    ["exit_on_trend_reversal", "Jual saat tren berbalik (EMA cepat < EMA lambat)", "", "bool"],
+  ],
+  general: [
+    ["poll_seconds", "Interval cek harga (detik)", "Seberapa sering stop loss / take profit dicek."],
+    ["candles_lookback", "Jumlah candle untuk indikator", "Minimal EMA tren + 20."],
+  ],
+};
+
+function field(section, key, label, help, type, value, placeholder) {
+  const id = `f-${section}-${key}`;
+  if (type === "bool") {
+    return `<div><label class="check"><input type="checkbox" id="${id}" ${value ? "checked" : ""}> ${esc(label)}</label>${help ? `<div class="help">${esc(help)}</div>` : ""}</div>`;
+  }
+  return `<div><label for="${id}">${esc(label)}</label><input id="${id}" inputmode="decimal" value="${esc(App.fmtNum(value))}" ${placeholder ? `placeholder="${esc(placeholder)}"` : ""}>${help ? `<div class="help">${esc(help)}</div>` : ""}</div>`;
+}
+
+function sectionForm(section, title, note) {
+  const vals = S.sections[section];
+  return `<div class="card section"><h2>${esc(title)}</h2>${note ? `<div class="note">${note}</div>` : ""}
+    <div class="form-grid">${FIELDS[section].map(([k, l, h, t]) => field(section, k, l, h, t, vals[k])).join("")}</div>
+    <div class="actions"><button class="primary" data-save="${section}">Simpan</button><span class="err" id="err-${section}"></span></div></div>`;
+}
+
+function readSection(section) {
+  const out = {};
+  for (const [k, , , t] of FIELDS[section]) {
+    const el = $(`f-${section}-${k}`);
+    out[k] = t === "bool" ? el.checked : App.num(el.value);
+  }
+  return out;
+}
+
+async function saveSection(section, extra) {
+  const err = $("err-" + section); if (err) err.textContent = "";
+  try {
+    const value = section === "general" ? { ...readSection("general"), ...(extra || {}) } : readSection(section);
+    const body = { value };
+    if (section === "general") { body.password = $("mode-pw") ? $("mode-pw").value : ""; body.confirm = $("mode-confirm") ? $("mode-confirm").value.trim() : ""; }
+    const j = await App.api("PUT", "/api/settings/" + section, body);
+    S = j.settings; App.toast(j.message); render();
+  } catch (e) { if (err) err.textContent = e.message; else App.toast(e.message, true); }
+}
+
+/* ---------------- tab: pair & stop loss ---------------- */
+const PF = [["stop_loss_pct", "Stop loss %"], ["take_profit_pct", "Take profit %"], ["trailing_stop_pct", "Trailing %"],
+            ["trailing_activation_pct", "Trailing aktif ≥ %"], ["idr_per_trade", "Modal / transaksi (Rp)"]];
+let PAIRS = [];
+
+function pairDefaults() {
+  const e = S.sections.exits, r = S.sections.risk;
+  return { stop_loss_pct: e.stop_loss_pct, take_profit_pct: e.take_profit_pct, trailing_stop_pct: e.trailing_stop_pct,
+           trailing_activation_pct: e.trailing_activation_pct, idr_per_trade: r.idr_per_trade };
+}
+
+function renderPairs() {
+  PAIRS = S.sections.pairs.map((r) => ({ ...r }));
+  const d = pairDefaults();
+  const mk = (id) => MARKET.find((m) => m.id === id);
+  const rows = PAIRS.map((r, i) => {
+    const m = mk(r.pair);
+    const open = S.open_positions.includes(r.pair);
+    return `<tr>
+      <td><input type="checkbox" class="switch" data-i="${i}" data-k="enabled" ${r.enabled ? "checked" : ""} aria-label="aktif"></td>
+      <td><b>${esc(r.pair.toUpperCase())}</b>${open ? ' <span class="tag buy">posisi terbuka</span>' : ""}
+        <div class="help">${m ? `harga ${new Intl.NumberFormat("id-ID", { maximumSignificantDigits: 8 }).format(m.last)} · min. order Rp${new Intl.NumberFormat("id-ID").format(m.min_idr)}` : (MARKET.length ? '<span class="neg">tidak ditemukan di Indodax</span>' : "")}</div></td>
+      ${PF.map(([k]) => `<td class="num"><input class="small" inputmode="decimal" data-i="${i}" data-k="${k}" value="${esc(App.fmtNum(r[k]))}" placeholder="${esc(App.fmtNum(d[k]))}"></td>`).join("")}
+      <td><button data-del="${i}" title="Hapus pair" aria-label="Hapus ${esc(r.pair)}">Hapus</button></td></tr>`;
+  }).join("");
+  $("panel").innerHTML = `
+    <div class="card section">
+      <h2>Pair yang diperdagangkan</h2>
+      <div class="note">Kolom yang <b>dikosongkan</b> memakai pengaturan umum (angka abu-abu). Isi untuk membuat pengaturan khusus pair,
+        mis. stop loss lebih longgar untuk koin yang bergejolak seperti PEPE. Perubahan berlaku ±20 detik setelah disimpan,
+        juga untuk posisi yang sedang terbuka. Pair yang dinonaktifkan/dihapus tidak dibeli lagi, tapi posisinya yang masih
+        terbuka tetap dijaga stop loss.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:10px 0 14px">
+        <div style="flex:1;min-width:220px"><label for="addpair">Tambah pair</label>
+          <input id="addpair" list="marketlist" placeholder="ketik mis. sol, xrp, shib…" autocomplete="off"></div>
+        <button id="addbtn">Tambah</button>
+      </div>
+      <datalist id="marketlist">${MARKET.map((m) => `<option value="${esc(m.id)}">${esc(m.name)} · vol 24j Rp${new Intl.NumberFormat("id-ID", { notation: "compact" }).format(m.vol_idr)}</option>`).join("")}</datalist>
+      <div class="tbl"><table>
+        <thead><tr><th>Aktif</th><th>Pair</th>${PF.map(([, l]) => `<th class="num">${l}</th>`).join("")}<th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="8" class="muted">Belum ada pair.</td></tr>`}</tbody></table></div>
+      <div class="actions"><button class="primary" id="savepairs">Simpan pair</button><button id="resetpairs">Batalkan perubahan</button><span class="err" id="err-pairs"></span></div>
+    </div>`;
+  $("panel").querySelectorAll("input[data-i]").forEach((el) => {
+    el.addEventListener(el.type === "checkbox" ? "change" : "input", () => {
+      const r = PAIRS[+el.dataset.i];
+      r[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value;
+    });
+  });
+  $("panel").querySelectorAll("button[data-del]").forEach((b) => b.onclick = () => {
+    const r = PAIRS[+b.dataset.del];
+    if (S.open_positions.includes(r.pair) && !confirm(`${r.pair.toUpperCase()} masih punya posisi terbuka. Tetap hapus dari daftar? (posisi tetap dijaga stop loss)`)) return;
+    PAIRS.splice(+b.dataset.del, 1); S.sections.pairs = PAIRS; renderPairsKeep();
+  });
+  $("addbtn").onclick = () => {
+    let v = $("addpair").value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!v) return;
+    if (!v.endsWith("idr")) v += "idr";
+    if (MARKET.length && !MARKET.find((m) => m.id === v)) { App.toast(`Pair ${v} tidak ada di market IDR Indodax`, true); return; }
+    if (PAIRS.find((r) => r.pair === v)) { App.toast(`${v} sudah ada di daftar`, true); return; }
+    PAIRS.push({ pair: v, enabled: true, stop_loss_pct: null, take_profit_pct: null, trailing_stop_pct: null, trailing_activation_pct: null, idr_per_trade: null });
+    S.sections.pairs = PAIRS; renderPairsKeep();
+  };
+  $("savepairs").onclick = async () => {
+    $("err-pairs").textContent = "";
+    const value = PAIRS.map((r) => { const o = { pair: r.pair, enabled: !!r.enabled }; PF.forEach(([k]) => (o[k] = App.num(r[k]))); return o; });
+    try { const j = await App.api("PUT", "/api/settings/pairs", { value }); S = j.settings; App.toast(j.message); render(); }
+    catch (e) { $("err-pairs").textContent = e.message; }
+  };
+  $("resetpairs").onclick = load;
+}
+function renderPairsKeep() { const keep = PAIRS; renderPairs(); }
+
+/* ---------------- tab: mode & sistem ---------------- */
+function renderGeneral() {
+  const g = S.sections.general;
+  $("panel").innerHTML = `
+    <div class="card section"><h2>Mode trading</h2>
+      <div class="form-grid">
+        <div><label for="mode-sel">Mode</label>
+          <select id="mode-sel"><option value="paper" ${g.mode === "paper" ? "selected" : ""}>SIMULASI (paper) — tanpa uang sungguhan</option>
+          <option value="live" ${g.mode === "live" ? "selected" : ""}>LIVE — order sungguhan di akun Indodax</option></select>
+          <div class="help">Mengganti mode membuat bot dimulai ulang otomatis. Posisi simulasi dan live dicatat terpisah.</div></div>
+        <div><label for="tf-sel">Timeframe candle sinyal</label>
+          <select id="tf-sel">${S.timeframes.map((t) => `<option value="${t}" ${g.timeframe === t ? "selected" : ""}>${/^\d+$/.test(t) ? t + " menit" : t}</option>`).join("")}</select></div>
+        ${FIELDS.general.map(([k, l, h]) => field("general", k, l, h, null, g[k])).join("")}
+      </div>
+      <div id="mode-extra"></div>
+      <div class="actions"><button class="primary" id="save-general">Simpan</button><span class="err" id="err-general"></span></div>
+    </div>
+    <div class="card section"><h2>Dashboard</h2>
+      <div class="form-grid">${field("dashboard", "allow_control", "Tampilkan tombol Pause / Lanjutkan / Jual semua di dashboard", "", "bool", S.sections.dashboard.allow_control)}</div>
+      <div class="actions"><button class="primary" id="save-dashboard">Simpan</button><span class="err" id="err-dashboard"></span></div>
+    </div>
+    ${sectionForm("fees", "Biaya transaksi")}
+    ${sectionForm("paper", "Mode simulasi")}`;
+  const extra = () => {
+    const changed = $("mode-sel").value !== g.mode;
+    $("mode-extra").innerHTML = !changed ? "" : `
+      <div class="note" style="margin-top:14px">${$("mode-sel").value === "live"
+        ? "<b>Beralih ke LIVE:</b> bot akan membeli & menjual dengan uang sungguhan sesuai pengaturan. Pastikan sudah menguji di mode simulasi."
+        : "Beralih ke SIMULASI: bot berhenti memakai uang sungguhan. Posisi live yang masih terbuka <b>tidak</b> dijual otomatis — jual dulu jika perlu."}</div>
+      <div class="form-grid">
+        <div><label for="mode-pw">Password login Anda</label><input id="mode-pw" type="password" autocomplete="current-password"></div>
+        ${$("mode-sel").value === "live" ? `<div><label for="mode-confirm">Ketik LIVE untuk konfirmasi</label><input id="mode-confirm" autocomplete="off"></div>` : ""}
+      </div>`;
+  };
+  $("mode-sel").onchange = extra;
+  $("save-general").onclick = () => saveSection("general", { mode: $("mode-sel").value, timeframe: $("tf-sel").value });
+  $("save-dashboard").onclick = async () => {
+    try { const j = await App.api("PUT", "/api/settings/dashboard", { value: { allow_control: $("f-dashboard-allow_control").checked } }); S = j.settings; App.toast(j.message); }
+    catch (e) { $("err-dashboard").textContent = e.message; }
+  };
+  bindSaves();
+}
+
+/* ---------------- tab: API key Indodax ---------------- */
+function when(info) {
+  if (!info) return "";
+  return `diperbarui ${new Date(info.updated_at * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })} oleh ${esc(info.updated_by || "-")}`;
+}
+function renderIndodax() {
+  const c = S.credentials.indodax;
+  const has = c.api_key && c.secret_key;
+  $("panel").innerHTML = `
+    ${!S.master_key ? `<div class="banner"><span class="ico">⚠</span><span>BOT_MASTER_KEY belum ada di .env, sehingga kredensial tidak bisa disimpan. Jalankan <code>python -m bot init</code> di VPS lalu restart dashboard.</span></div>` : ""}
+    <div class="card section"><h2>API key Indodax (TAPI v2)</h2>
+      <div class="note">Status: ${has ? `<b class="ok-text">tersimpan</b> · API key ${esc(c.api_key.hint)} · ${when(c.api_key)}` : "<b>belum ada</b>"}.
+        Kredensial disimpan terenkripsi di database dan tidak pernah ditampilkan ulang.</div>
+      <div class="actions" style="margin-top:4px">${has ? `<button id="test-key">Uji koneksi key tersimpan</button>` : ""}<span id="test-out" class="muted"></span></div>
+    </div>
+    <div class="card section"><h2>${has ? "Ganti" : "Masukkan"} API key</h2>
+      <div class="note">Buat key di <b>indodax.com/trade_api</b> → versi <b>TAPI v2</b>. Izin: <b>View + Trade saja, tanpa Withdraw</b>.
+        IP whitelist: isi IP publik VPS (<code>curl -4 ifconfig.me</code>).</div>
+      <form id="kf" autocomplete="off" class="form-grid">
+        <div><label for="k-key">API key</label><input id="k-key" autocomplete="off" spellcheck="false"></div>
+        <div><label for="k-secret">Secret key</label><input id="k-secret" type="password" autocomplete="new-password" spellcheck="false"></div>
+        <div><label for="k-pw">Password login Anda (konfirmasi)</label><input id="k-pw" type="password" autocomplete="current-password"></div>
+        <div style="align-self:end"><label class="check"><input type="checkbox" id="k-test" checked> Uji koneksi ke Indodax sebelum disimpan</label></div>
+      </form>
+      <div class="actions"><button class="primary" id="k-save">Simpan API key</button>${has ? `<button class="danger" id="k-del">Hapus API key</button>` : ""}<span class="err" id="err-k"></span></div>
+    </div>`;
+  if ($("test-key")) $("test-key").onclick = async () => {
+    $("test-out").textContent = "menguji…";
+    try { const j = await App.api("POST", "/api/credentials/indodax/test", {}); $("test-out").innerHTML = `<span class="ok-text">✓ ${esc(j.message)}</span>`; }
+    catch (e) { $("test-out").innerHTML = `<span class="neg">✕ ${esc(e.message)}</span>`; }
+  };
+  $("k-save").onclick = async () => {
+    $("err-k").textContent = ""; $("k-save").disabled = true;
+    try {
+      const j = await App.api("POST", "/api/credentials/indodax", { api_key: $("k-key").value, secret_key: $("k-secret").value, password: $("k-pw").value, test: $("k-test").checked });
+      S = j.settings; App.toast(j.message); render();
+    } catch (e) { $("err-k").textContent = e.message; } finally { if ($("k-save")) $("k-save").disabled = false; }
+  };
+  if ($("k-del")) $("k-del").onclick = async () => {
+    if (!$("k-pw").value) { $("err-k").textContent = "Isi password login untuk konfirmasi."; return; }
+    if (!confirm("Hapus API key Indodax dari database?")) return;
+    try { const j = await App.api("DELETE", "/api/credentials/indodax", { password: $("k-pw").value }); S = j.settings; App.toast(j.message); render(); }
+    catch (e) { $("err-k").textContent = e.message; }
+  };
+}
+
+/* ---------------- tab: Telegram ---------------- */
+function renderTelegram() {
+  const c = S.credentials.telegram;
+  const has = c.token && c.chat_id;
+  $("panel").innerHTML = `
+    <div class="card section"><h2>Notifikasi Telegram</h2>
+      <div class="form-grid">${field("telegram", "enabled", "Kirim notifikasi ke Telegram (beli, jual, error, ringkasan harian)", "", "bool", S.sections.telegram.enabled)}</div>
+      <div class="note">Kredensial: ${has ? `<b class="ok-text">tersimpan</b> · token ${esc(c.token.hint)} · ${when(c.token)}` : "<b>belum ada</b>"}</div>
+      <div class="actions"><button class="primary" id="save-tg-enabled">Simpan</button><span class="err" id="err-telegram"></span></div>
+    </div>
+    <div class="card section"><h2>${has ? "Ganti" : "Masukkan"} token bot Telegram</h2>
+      <div class="note">1) Chat <b>@BotFather</b> → <code>/newbot</code> → salin token. 2) Kirim pesan ke bot Anda, lalu buka
+        <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> dan salin angka <code>chat.id</code>.</div>
+      <div class="form-grid">
+        <div><label for="t-token">Token bot</label><input id="t-token" type="password" autocomplete="off"></div>
+        <div><label for="t-chat">Chat ID</label><input id="t-chat" autocomplete="off"></div>
+        <div><label for="t-pw">Password login Anda (konfirmasi)</label><input id="t-pw" type="password" autocomplete="current-password"></div>
+      </div>
+      <div class="actions"><button class="primary" id="t-save">Simpan & kirim pesan tes</button>${has ? `<button class="danger" id="t-del">Hapus</button>` : ""}<span class="err" id="err-t"></span></div>
+    </div>`;
+  $("save-tg-enabled").onclick = async () => {
+    try { const j = await App.api("PUT", "/api/settings/telegram", { value: { enabled: $("f-telegram-enabled").checked } }); S = j.settings; App.toast(j.message); }
+    catch (e) { $("err-telegram").textContent = e.message; }
+  };
+  $("t-save").onclick = async () => {
+    $("err-t").textContent = "";
+    try { const j = await App.api("POST", "/api/credentials/telegram", { token: $("t-token").value, chat_id: $("t-chat").value, password: $("t-pw").value }); S = j.settings; App.toast(j.message); render(); }
+    catch (e) { $("err-t").textContent = e.message; }
+  };
+  if ($("t-del")) $("t-del").onclick = async () => {
+    try { const j = await App.api("DELETE", "/api/credentials/telegram", { password: $("t-pw").value }); S = j.settings; App.toast(j.message); render(); }
+    catch (e) { $("err-t").textContent = e.message; }
+  };
+}
+
+/* ---------------- tab: akun ---------------- */
+const ACTIONS = { login: "Login", login_failed: "Login gagal", user_add: "Akun dibuat", password_change: "Ganti password",
+  credentials_indodax_set: "API key Indodax disimpan", credentials_indodax_delete: "API key Indodax dihapus",
+  credentials_telegram_set: "Telegram disimpan", credentials_telegram_delete: "Telegram dihapus",
+  control_pause: "Pause pembelian", control_resume: "Lanjutkan pembelian", control_sellall: "Jual semua posisi" };
+async function renderAccount() {
+  $("panel").innerHTML = `
+    <div class="card section"><h2>Ganti password (${esc(App.user)})</h2>
+      <div class="form-grid">
+        <div><label for="a-old">Password lama</label><input id="a-old" type="password" autocomplete="current-password"></div>
+        <div><label for="a-new">Password baru (min. 10 karakter)</label><input id="a-new" type="password" autocomplete="new-password"></div>
+        <div><label for="a-new2">Ulangi password baru</label><input id="a-new2" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="actions"><button class="primary" id="a-save">Ganti password</button><span class="err" id="err-a"></span></div>
+    </div>
+    <div class="card section"><h2>Riwayat perubahan & login</h2><div class="tbl" id="audit">Memuat…</div></div>`;
+  $("a-save").onclick = async () => {
+    $("err-a").textContent = "";
+    if ($("a-new").value !== $("a-new2").value) { $("err-a").textContent = "Password baru tidak sama."; return; }
+    try { const j = await App.api("POST", "/api/account/password", { old: $("a-old").value, new: $("a-new").value }); App.toast(j.message); }
+    catch (e) { $("err-a").textContent = e.message; }
+  };
+  try {
+    const j = await App.api("GET", "/api/audit");
+    $("audit").innerHTML = `<table><thead><tr><th>Waktu (WIB)</th><th>User</th><th>Aksi</th><th>Detail</th><th>IP</th></tr></thead><tbody>${
+      j.items.map((a) => `<tr><td>${new Date(a.ts * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta" })}</td><td>${esc(a.username)}</td>
+        <td>${esc(ACTIONS[a.action] || a.action.replace("settings_", "Pengaturan: "))}</td><td class="wrap-text">${esc(a.detail)}</td><td>${esc(a.ip)}</td></tr>`).join("")
+    }</tbody></table>`;
+  } catch (e) { $("audit").textContent = e.message; }
+}
+
+/* ---------------- kerangka ---------------- */
+function bindSaves() {
+  $("panel").querySelectorAll("button[data-save]").forEach((b) => (b.onclick = () => saveSection(b.dataset.save)));
+}
+function render() {
+  $("mode").textContent = S.sections.general.mode === "live" ? "LIVE" : "SIMULASI";
+  $("mode").className = "badge" + (S.sections.general.mode === "live" ? " live" : "");
+  $("dbinfo").textContent = `Pengaturan tersimpan di database ${S.database}. Bot menerapkan perubahan otomatis (±20 detik).`;
+  $("tabs").innerHTML = TABS.map(([k, l]) => `<button class="${k === TAB ? "active" : ""}" data-tab="${k}">${l}</button>`).join("");
+  $("tabs").querySelectorAll("button").forEach((b) => (b.onclick = () => { TAB = b.dataset.tab; history.replaceState(null, "", "#" + TAB); render(); }));
+  if (TAB === "pairs") renderPairs();
+  else if (TAB === "exits") { $("panel").innerHTML = sectionForm("exits", "Stop loss & target umum", "Berlaku untuk semua pair yang tidak punya pengaturan khusus di tab <b>Pair & stop loss</b>."); bindSaves(); }
+  else if (TAB === "risk") { $("panel").innerHTML = sectionForm("risk", "Modal & manajemen risiko"); bindSaves(); }
+  else if (TAB === "strategy") { $("panel").innerHTML = sectionForm("strategy", "Strategi sinyal beli", "Beli saat harga di atas EMA tren, EMA cepat memotong ke atas EMA lambat, dan RSI dalam rentang. Uji perubahan dengan <code>python -m bot backtest</code> sebelum dipakai live."); bindSaves(); }
+  else if (TAB === "general") renderGeneral();
+  else if (TAB === "indodax") renderIndodax();
+  else if (TAB === "telegram") renderTelegram();
+  else if (TAB === "account") renderAccount();
+}
+async function load() {
+  S = await App.api("GET", "/api/settings");
+  render();
+  if (!MARKET.length) {
+    try { MARKET = (await App.api("GET", "/api/market/pairs")).pairs; if (TAB === "pairs") renderPairs(); }
+    catch (e) { App.toast("Daftar pair Indodax tidak bisa dimuat: " + e.message, true); }
+  }
+}
+App.nav("settings").then(load).catch(() => {});
+</script>
+</body>
+</html>

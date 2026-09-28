@@ -41,134 +41,153 @@ menjual manual koin yang sedang dipegang bot, bot akan menyesuaikan catatannya s
 
 ---
 
-## 2. Siapkan API key TAPI v2
+## 2. Instalasi di VPS (Ubuntu/Debian)
 
-Key lama yang terlihat di akun Anda kemungkinan key TAPI versi lama, yang **tidak bisa** dipakai untuk v2.
+```bash
+git clone https://github.com/totopriyono78/indodax-trading-bot.git
+cd indodax-trading-bot
+bash deploy/install.sh
+```
 
-1. Login ke Indodax → buka **https://indodax.com/trade_api** → buat key baru **TAPI v2**.
-2. Izin: centang **View** dan **Trade** saja. **Jangan centang Withdraw.**
-3. **IP whitelist**: isi dengan IP publik VPS Anda (cek di VPS: `curl -4 ifconfig.me`).
-4. Simpan API key & secret key. Secret hanya ditampilkan sekali.
+`install.sh` memasang Python venv & dependensi, lalu menjalankan `python -m bot init` yang:
 
-Jangan pernah membagikan secret key ke siapa pun, termasuk menempelkannya di chat.
+1. membuat **database** (default SQLite di `data/bot.db`),
+2. membuat **kunci enkripsi** `BOT_MASTER_KEY` di `.env` — **simpan cadangannya**; tanpa kunci ini API key
+   yang tersimpan tidak bisa dibuka dan harus dimasukkan ulang,
+3. meminta Anda membuat **akun admin** untuk login dashboard.
+
+Butuh Python 3.9+ (Ubuntu 22.04/24.04 sudah cukup).
+
+### Memakai PostgreSQL (opsional)
+
+SQLite sudah cukup untuk satu bot. Jika ingin PostgreSQL:
+
+```bash
+sudo -u postgres psql -c "CREATE USER botuser WITH PASSWORD 'ganti-password';"
+sudo -u postgres psql -c "CREATE DATABASE indodax_bot OWNER botuser;"
+echo 'DATABASE_URL=postgresql+psycopg://botuser:ganti-password@localhost:5432/indodax_bot' >> .env
+.venv/bin/pip install -r requirements-postgres.txt
+.venv/bin/python -m bot init
+```
 
 ---
 
-## 3. Instalasi di VPS (Ubuntu/Debian)
+## 3. Dashboard web: login & pengaturan
+
+Semua pengaturan trading disimpan di database dan diubah lewat dashboard — tidak perlu mengedit file atau
+me-restart bot. Bot membaca perubahan otomatis dalam ±20 detik.
 
 ```bash
-# salin folder bot ke VPS, misalnya:
-scp indodax-bot.zip user@IP_VPS:~
-ssh user@IP_VPS
-unzip indodax-bot.zip && cd indodax-bot
-
-bash deploy/install.sh        # venv, dependensi, config, layanan systemd
-nano .env                     # isi INDODAX_API_KEY dan INDODAX_SECRET_KEY
-nano config.yaml              # atur pair & risiko (biarkan mode: paper)
+sudo systemctl enable --now indodax-bot-web
 ```
 
-Butuh Python 3.9+ (Ubuntu 22.04/24.04 sudah cukup).
+### Cara membuka dashboard
+
+**Pilihan A — SSH tunnel (paling aman, default).** Dashboard hanya mendengarkan di `127.0.0.1:8080` VPS.
+Dari laptop: `ssh -L 8080:localhost:8080 user@IP_VPS`, biarkan terbuka, lalu buka **http://localhost:8080**.
+
+**Pilihan B — dibuka dari internet / HP.** Ubah `dashboard.host: 0.0.0.0` di `config.yaml`, buka port
+(`sudo ufw allow 8080/tcp`), restart `indodax-bot-web`. Karena halaman ini menyimpan API key, **pasang HTTPS**
+(mis. Caddy + domain Anda) sebelum dipakai rutin dari jaringan publik.
+
+### Login
+
+- Akun admin dibuat saat `python -m bot init`. Jika belum ada akun, halaman pertama meminta **kode setup**
+  yang tercetak di log (`journalctl -u indodax-bot-web -n 30`).
+- Tambah akun / reset password dari terminal: `python -m bot user add NAMA`, `python -m bot user passwd NAMA`.
+- 5 kali salah password → dikunci 10 menit. Sesi berlaku 12 jam.
+
+### Menu Pengaturan
+
+| Tab | Isi |
+|---|---|
+| **Pair & stop loss** | Tambah/hapus/nonaktifkan pair (daftar diambil langsung dari Indodax), dan atur **stop loss, take profit, trailing, dan modal per transaksi untuk tiap pair**. Kolom kosong = pakai pengaturan umum. |
+| Stop loss & target umum | Nilai default untuk semua pair |
+| Modal & risiko | Modal per transaksi, posisi maksimum, eksposur maksimum, batas rugi harian, filter spread/volume |
+| Strategi | Parameter EMA/RSI |
+| Mode & sistem | **SIMULASI / LIVE** (butuh password + ketik `LIVE`; bot restart otomatis), timeframe, biaya, modal simulasi, tombol kontrol dashboard |
+| **API key Indodax** | Masukkan/ganti API key & secret: diuji ke Indodax dulu, disimpan **terenkripsi**, tidak pernah ditampilkan ulang, langsung dipakai bot tanpa restart. Butuh konfirmasi password. |
+| Telegram | Aktif/nonaktif notifikasi, token & chat ID (dikirim pesan tes saat disimpan) |
+| Akun & riwayat | Ganti password, riwayat login & semua perubahan pengaturan (siapa, kapan, apa) |
+
+Pengaman tambahan: tidak bisa pindah dari LIVE ke SIMULASI selama masih ada posisi live terbuka (jual dulu),
+dan jika pengaturan di database rusak, bot tetap jalan memakai pengaturan valid terakhir dengan pembelian
+di-pause agar stop loss posisi terbuka tetap bekerja.
+
+### Siapkan API key TAPI v2
+
+1. Login Indodax → **https://indodax.com/trade_api** → buat key **TAPI v2** (key TAPI lama tidak bisa dipakai).
+2. Izin: **View + Trade saja. Jangan centang Withdraw.**
+3. IP whitelist: IP publik VPS (`curl -4 ifconfig.me`).
+4. Tempel API key & secret di dashboard → Pengaturan → **API key Indodax**.
+
+### Halaman Dashboard
+
+Status bot (berjalan/terlambat/mati), PnL hari ini/bulan ini/total, grafik PnL, posisi terbuka dengan batas
+stop loss saat ini, sinyal & SL/TP tiap pair, transaksi terakhir, log, serta tombol **Pause**, **Lanjutkan**,
+dan **Jual semua posisi**. Diperbarui otomatis tiap 15 detik.
 
 ---
 
 ## 4. Urutan pemakaian yang disarankan
 
 ```bash
-# a) Cek koneksi, pair, API key, izin, saldo
-.venv/bin/python -m bot check
-
-# b) Backtest strategi dengan data historis Indodax
-.venv/bin/python -m bot backtest --days 60
-.venv/bin/python -m bot backtest --days 90 --pairs btcidr,dogeidr --timeframe 60
-
-# c) Bandingkan kombinasi TP/SL/trailing (dipilih di 70% data awal, diuji di 30% akhir)
-.venv/bin/python -m bot backtest --days 120 --sweep
-
-# d) Jalankan simulasi (mode: paper) 24 jam lewat systemd — minimal 1–2 minggu
-sudo systemctl enable --now indodax-bot
-journalctl -u indodax-bot -f           # lihat log langsung
-.venv/bin/python -m bot status         # posisi, PnL, ekuitas simulasi
-
-# e) Setelah yakin: ubah config.yaml -> mode: live, idr_per_trade kecil, lalu
-sudo systemctl restart indodax-bot
+.venv/bin/python -m bot check                      # koneksi, pair, API key, izin, saldo
+.venv/bin/python -m bot backtest --days 60         # uji strategi (memakai SL per pair dari database)
+.venv/bin/python -m bot backtest --days 120 --sweep --pairs pepeidr   # cari SL/TP yang cocok per koin
+sudo systemctl enable --now indodax-bot            # jalankan (mode SIMULASI dulu, 1–2 minggu)
+journalctl -u indodax-bot -f                       # log langsung
 ```
 
+Setelah yakin, pindah ke **LIVE** di dashboard (Pengaturan → Mode & sistem) dengan modal kecil.
 State simulasi dan live disimpan terpisah (`data/state_paper.json` vs `data/state_live.json`).
 
-### Perintah sehari-hari
+### Perintah terminal
 
 | Perintah | Fungsi |
 |---|---|
-| `python -m bot web` | Jalankan dashboard web secara manual (lihat bagian 5) |
+| `python -m bot init` | Siapkan database, kunci enkripsi, akun admin (aman dijalankan ulang) |
+| `python -m bot user add/passwd/list` | Kelola akun login dashboard |
 | `python -m bot status` | Posisi terbuka, PnL hari ini & total, win rate |
-| `python -m bot pause` | Stop membuka posisi baru (posisi lama tetap dijaga TP/SL) |
-| `python -m bot resume` | Boleh membuka posisi baru lagi |
-| `python -m bot sellall` | Minta bot yang sedang jalan menjual semua posisinya dan pause pembelian baru |
+| `python -m bot pause` / `resume` | Stop / lanjutkan membuka posisi baru |
+| `python -m bot sellall` | Jual semua posisi bot dan pause pembelian baru |
 | `sudo systemctl stop indodax-bot` | Matikan bot (posisi **tidak** dijual otomatis) |
-| `data/trades_live.csv` | Jurnal semua transaksi (bisa dibuka di Excel) |
-| `data/bot.log` | Log lengkap, termasuk alasan setiap sinyal |
+| `data/trades_live.csv` | Jurnal transaksi (bisa dibuka di Excel) |
+
+### Cadangan (backup)
+
+Yang perlu dicadangkan: `.env` (terutama `BOT_MASTER_KEY`), `data/bot.db` (atau database PostgreSQL),
+dan folder `data/` (posisi & jurnal transaksi).
 
 ---
 
-## 5. Dashboard web (monitoring dari browser)
+## 5. Tempat data disimpan
 
-Dashboard berjalan sebagai proses terpisah di VPS dan hanya **membaca** catatan bot, jadi tidak
-mengganggu trading. Isinya:
+| Data | Lokasi |
+|---|---|
+| Pengaturan, pair & stop loss per pair, akun login, API key (terenkripsi), riwayat perubahan | Database (`data/bot.db` atau PostgreSQL) |
+| Posisi terbuka, PnL harian | `data/state_<mode>.json` |
+| Jurnal transaksi | `data/trades_<mode>.csv` |
+| Log | `data/bot.log` |
 
-- status bot (berjalan / terlambat / mati) dan mode (simulasi / live);
-- PnL hari ini, bulan ini, total, belum terealisasi, win rate, modal terpakai (dan ekuitas simulasi);
-- grafik PnL kumulatif dan PnL harian 30 hari;
-- posisi terbuka lengkap dengan batas stop loss / trailing dan take profit saat ini;
-- sinyal terakhir tiap pair beserta alasannya (mis. "harga di bawah EMA tren");
-- transaksi terakhir, pengaturan aktif, dan log bot;
-- tombol **Pause pembelian**, **Lanjutkan**, dan **Jual semua posisi** (bisa dimatikan di config).
-
-Halaman diperbarui otomatis tiap 15 detik dan nyaman dibuka di HP.
-
-```bash
-sudo systemctl enable --now indodax-bot-web
-```
-
-### Cara membukanya
-
-**Pilihan A — SSH tunnel (paling aman, default).** Dashboard hanya mendengarkan di `127.0.0.1:8080` VPS.
-Dari laptop Anda:
-
-```bash
-ssh -L 8080:localhost:8080 user@IP_VPS
-```
-
-Biarkan terminal itu terbuka, lalu buka **http://localhost:8080** di browser laptop.
-
-**Pilihan B — dibuka langsung dari internet / HP.**
-
-1. Di `.env` isi `DASHBOARD_PASSWORD` (minimal 10 karakter, acak). Dashboard menolak berjalan
-   di alamat publik tanpa password.
-2. Di `config.yaml` ubah `dashboard.host: 0.0.0.0`.
-3. Buka port di firewall VPS: `sudo ufw allow 8080/tcp`.
-4. `sudo systemctl restart indodax-bot-web`, lalu buka `http://IP_VPS:8080` (login `admin` + password).
-
-Catatan: pilihan B memakai HTTP biasa, sehingga password bisa disadap di jaringan publik (Wi-Fi kafe dll.).
-Untuk pemakaian rutin, pasang HTTPS lewat reverse proxy (mis. Caddy dengan domain Anda) atau pakai
-pilihan A. Jika ragu, set `dashboard.allow_control: false` agar dashboard hanya bisa melihat.
+---
 
 ## 6. Notifikasi Telegram (opsional, disarankan)
 
 1. Di Telegram, chat **@BotFather** → `/newbot` → salin token.
 2. Kirim pesan apa saja ke bot baru Anda, lalu buka
    `https://api.telegram.org/bot<TOKEN>/getUpdates` → salin angka `chat.id`.
-3. Isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`, set `telegram.enabled: true` di `config.yaml`.
-4. `python -m bot check` akan mengirim pesan tes.
+3. Dashboard → Pengaturan → **Telegram**: isi token & chat ID, centang aktif.
 
-Anda akan menerima pesan saat bot beli/jual, error, batas rugi harian tercapai, dan ringkasan harian.
+Anda akan menerima pesan saat bot beli/jual, error, batas rugi harian tercapai, pengaturan berubah, dan ringkasan harian.
 
 ---
 
 ## 7. Hal yang perlu dipahami
 
 - **Biaya menentukan segalanya.** Setiap beli + jual memakan kira-kira 0,8–1% (fee taker, PPh 0,21% saat
-  jual, CFX, slippage). Take profit di bawah ~2% hampir pasti tidak menguntungkan. Cocokkan nilai `fees`
-  di config dengan tabel *All-in Fees* di menu Profil akun Anda.
+  jual, CFX, slippage). Take profit di bawah ~2% hampir pasti tidak menguntungkan. Cocokkan biaya di
+  dashboard (Pengaturan → Mode & sistem) dengan tabel *All-in Fees* di menu Profil akun Anda.
 - **Stop loss dijalankan oleh bot**, bukan oleh Indodax (API tidak mendukung stop-limit). Jika VPS atau bot
   mati, stop loss ikut tidak berjalan. systemd otomatis menyalakan ulang bot; notifikasi Telegram membantu
   Anda tahu jika ada masalah.
@@ -195,7 +214,9 @@ bot/
   backtest.py    backtest & sweep parameter
   state.py       penyimpanan posisi, PnL, jurnal CSV
   notifier.py    Telegram
-  web.py         dashboard web (+ web_ui.html)
+  db.py          database: pengaturan, kredensial terenkripsi, user, sesi, audit
+  settings.py    pengaturan dari database + pengaturan per pair
+  web.py         dashboard web: login, monitoring, pengaturan (+ *.html, static/)
 tests/           uji otomatis dengan data & API palsu (python -m pytest)
 deploy/          install.sh & layanan systemd
 ```

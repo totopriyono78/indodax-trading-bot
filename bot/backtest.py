@@ -16,6 +16,7 @@ from typing import List
 
 from .config import TIMEFRAMES
 from .engine import rp
+from .settings import pair_cfg
 from .market import Candle
 from .strategy import ExitRules, TrendStrategy
 
@@ -72,6 +73,7 @@ class BtResult:
 
 
 def backtest(cfg: dict, pair: str, candles: List[Candle]) -> BtResult:
+    cfg = pair_cfg(cfg, pair)  # stop loss / TP / modal khusus pair jika diatur
     strat = TrendStrategy(cfg)
     rules = ExitRules(cfg)
     fee_b = cfg["fees"]["buy_pct"] / 100
@@ -159,6 +161,7 @@ def sweep(cfg: dict, data: dict, train_ratio: float = 0.7, top: int = 5):
             continue
         c2 = copy.deepcopy(cfg)
         c2["exits"].update(take_profit_pct=tp, stop_loss_pct=sl, trailing_stop_pct=tr)
+        c2["pair_settings"] = {}  # sweep menguji kombinasi yang sama untuk semua pair
         train = test = 0.0
         n_train = n_test = 0
         for pair, candles in data.items():

@@ -108,8 +108,6 @@ def validate(cfg: dict) -> None:
         errs.append("mode harus 'paper' atau 'live'")
     if cfg["timeframe"] not in TIMEFRAMES:
         errs.append(f"timeframe harus salah satu dari {list(TIMEFRAMES)}")
-    if not cfg["pairs"]:
-        errs.append("pairs tidak boleh kosong")
     for p in cfg["pairs"]:
         if not isinstance(p, str) or not p.endswith("idr"):
             errs.append(f"pair '{p}' harus berformat seperti 'btcidr' (market IDR)")

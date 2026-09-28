@@ -1,0 +1,2 @@
+# Hanya jika memakai PostgreSQL (DATABASE_URL=postgresql+psycopg://...)
+psycopg[binary]>=3.1

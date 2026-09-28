@@ -5,97 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bot Indodax — Monitor</title>
 <link rel="icon" href="data:,">
-<style>
-:root {
-  color-scheme: light;
-  --bg: #f4f4f2; --surface: #fcfcfb; --surface-2: #f0efec; --border: #e2e1dc;
-  --text: #0b0b0b; --text-2: #52514e; --muted: #7a7974;
-  --grid: #e8e7e3; --axis: #b9b8b2;
-  --series-1: #2a78d6;           /* biru: garis PnL kumulatif, batang positif */
-  --neg: #e34948;                /* merah: batang negatif (pasangan divergen) */
-  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
-  --good-text: #006300; --critical-text: #b42828;
-  --btn: #0b0b0b; --btn-text: #fff;
-}
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #2e2e2b;
-    --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e86;
-    --grid: #2a2a27; --axis: #55544f;
-    --series-1: #3987e5; --neg: #e66767;
-    --good-text: #4fcf4f; --critical-text: #f08080;
-    --btn: #f4f4f2; --btn-text: #111;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #2e2e2b;
-  --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e86;
-  --grid: #2a2a27; --axis: #55544f;
-  --series-1: #3987e5; --neg: #e66767;
-  --good-text: #4fcf4f; --critical-text: #f08080;
-  --btn: #f4f4f2; --btn-text: #111;
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-h1 { font-size: 20px; margin: 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-h2 { font-size: 15px; margin: 0 0 10px; }
-.badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); }
-.badge.live { background: var(--critical); color: #fff; border-color: transparent; }
-.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
-.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.controls { display: flex; gap: 8px; flex-wrap: wrap; }
-button { font: inherit; font-weight: 600; border-radius: 8px; padding: 7px 12px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--surface); color: var(--text); }
-button.primary { background: var(--btn); color: var(--btn-text); border-color: var(--btn); }
-button.danger { color: var(--critical-text); border-color: var(--critical); }
-button:disabled { opacity: .5; cursor: default; }
-.banner { border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border);
-  background: var(--surface); display: flex; gap: 8px; align-items: flex-start; }
-.banner .ico { font-weight: 700; }
-.grid { display: grid; gap: 12px; }
-.kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 12px; }
-@media (min-width: 900px) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; min-width: 0; }
-.kpi .label { color: var(--text-2); font-size: 12px; }
-.kpi .value .ar { font-size: 13px; margin-right: 3px; vertical-align: 2px; }
-.kpi .value { font-size: clamp(17px, 4.6vw, 22px); white-space: nowrap; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.kpi .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.pos { color: var(--good-text); } .neg { color: var(--critical-text); }
-.charts { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-bottom: 12px; }
-.chart { position: relative; height: 220px; }
-.chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
-.empty { color: var(--muted); display: flex; align-items: center; justify-content: center; height: 100%; text-align: center; padding: 0 12px; }
-.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; padding: 6px 8px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12); white-space: nowrap; display: none; z-index: 2; }
-.tip b { font-variant-numeric: tabular-nums; }
-.section { margin-bottom: 12px; }
-.tbl { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { font-size: 12px; color: var(--text-2); font-weight: 600; }
-td.num, th.num { text-align: right; }
-td.wrap-text { white-space: normal; min-width: 220px; color: var(--text-2); }
-.tag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); color: var(--text-2); }
-.tag.buy { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good-text); }
-.tag.exit { background: color-mix(in srgb, var(--serious) 22%, transparent); color: var(--text); }
-.tag.hold { }
-.muted { color: var(--muted); }
-details summary { cursor: pointer; font-weight: 600; }
-pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px; font-size: 12px; max-height: 380px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; }
-.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px 16px; font-size: 13px; }
-.settings div span { color: var(--text-2); }
-footer { color: var(--muted); font-size: 12px; margin: 16px 0; text-align: center; }
-.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--btn); color: var(--btn-text);
-  padding: 10px 14px; border-radius: 10px; display: none; max-width: calc(100% - 32px); z-index: 5; }
-</style>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js"></script>
 </head>
 <body>
 <div class="wrap">
+  <nav class="topnav" id="topnav"></nav>
   <header>
     <div>
       <h1>Bot Indodax <span id="mode" class="badge">—</span></h1>
@@ -139,7 +54,7 @@ footer { color: var(--muted); font-size: 12px; margin: 16px 0; text-align: cente
   </div>
 
   <div class="card section">
-    <h2>Pengaturan aktif</h2>
+    <h2>Pengaturan aktif <a href="/settings" style="font-size:13px;font-weight:600;margin-left:8px">Ubah →</a></h2>
     <div class="settings" id="settings"></div>
   </div>
 
@@ -152,7 +67,6 @@ footer { color: var(--muted); font-size: 12px; margin: 16px 0; text-align: cente
 
   <footer id="footer"></footer>
 </div>
-<div class="toast" id="toast"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -190,16 +104,11 @@ const REASONS = { take_profit: "Take profit", stop_loss: "Stop loss", trailing_s
 let DATA = null;
 let SHOW_ALL = false;
 
-function toast(msg) {
-  const t = $("toast"); t.textContent = msg; t.style.display = "block";
-  clearTimeout(toast._t); toast._t = setTimeout(() => (t.style.display = "none"), 4000);
-}
+function toast(msg) { App.toast(msg); }
 
 async function load() {
   try {
-    const r = await fetch("api/summary", { cache: "no-store" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    DATA = await r.json();
+    DATA = await App.api("GET", "/api/summary");
     render(DATA);
   } catch (e) {
     $("alive").innerHTML = `<span class="dot" style="background:var(--critical)"></span><span>Dashboard tidak bisa memuat data (${esc(e.message)})</span>`;
@@ -264,7 +173,7 @@ function render(d) {
   // sinyal
   $("tf").textContent = `· candle ${d.timeframe} menit`;
   const tag = { buy: ["buy", "BELI"], exit: ["exit", "KELUAR"], hold: ["hold", "TUNGGU"] };
-  $("signals").innerHTML = `<table><thead><tr><th>Pair</th><th class="num">Harga</th><th class="num">Spread</th><th class="num">Volume 24 jam</th><th>Sinyal</th><th class="num">RSI</th><th>Keterangan</th><th>Candle</th></tr></thead><tbody>` +
+  $("signals").innerHTML = `<table><thead><tr><th>Pair</th><th class="num">Harga</th><th class="num">Spread</th><th class="num">Volume 24 jam</th><th>Sinyal</th><th class="num">RSI</th><th class="num">SL / TP</th><th>Keterangan</th><th>Candle</th></tr></thead><tbody>` +
     d.signals.map((g) => {
       const [c, t] = tag[g.action] || ["hold", "—"];
       let note = g.reason || "menunggu data candle";
@@ -274,6 +183,7 @@ function render(d) {
         <td class="num">${g.spread_pct == null ? "—" : nf2.format(g.spread_pct) + "%"}</td>
         <td class="num">${g.vol_idr == null ? "—" : rp(g.vol_idr)}</td>
         <td><span class="tag ${c}">${t}</span></td><td class="num">${g.rsi == null ? "—" : nf0.format(g.rsi)}</td>
+        <td class="num">−${nf2.format(g.stop_loss_pct)}% / ${g.take_profit_pct ? "+" + nf2.format(g.take_profit_pct) + "%" : "—"}${g.custom ? ' <span class="tag">khusus</span>' : ""}</td>
         <td class="wrap-text">${esc(note)}</td><td>${g.candle_time ? wib(g.candle_time) : "—"}</td></tr>`;
     }).join("") + `</tbody></table>`;
 
@@ -429,9 +339,8 @@ function drawDaily(days) {
 async function act(action, confirmText) {
   if (confirmText && !window.confirm(confirmText)) return;
   try {
-    const r = await fetch("api/" + action, { method: "POST", headers: { "X-Dashboard": "1" } });
-    const j = await r.json();
-    toast(j.message || j.error || "Selesai");
+    const j = await App.api("POST", "/api/control/" + action, {});
+    toast(j.message || "Selesai");
   } catch (e) { toast("Gagal: " + e.message); }
   load();
 }
@@ -441,8 +350,7 @@ $("btn-sellall").onclick = () => act("sellall", "Jual SEMUA posisi yang dipegang
 
 async function loadLog() {
   try {
-    const r = await fetch("api/log", { cache: "no-store" });
-    const j = await r.json();
+    const j = await App.api("GET", "/api/log");
     const pre = $("log");
     pre.textContent = j.lines.length ? j.lines.join("\n") : "Log masih kosong.";
     pre.scrollTop = pre.scrollHeight;
@@ -450,6 +358,7 @@ async function loadLog() {
 }
 $("logbox").addEventListener("toggle", () => { if ($("logbox").open) loadLog(); });
 
+App.nav("dash").catch(() => {});
 let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => DATA && render(DATA), 150); });
 load();
 setInterval(() => { load(); if ($("logbox").open) loadLog(); }, 15000);

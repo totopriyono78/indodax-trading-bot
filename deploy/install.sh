@@ -19,6 +19,13 @@ if [ ! -f .env ]; then cp .env.example .env; fi
 chmod 600 .env
 mkdir -p data
 
+if grep -q "^DATABASE_URL=postgres" .env 2>/dev/null; then
+  .venv/bin/pip install -r requirements-postgres.txt -q
+fi
+
+echo "==> Database, kunci enkripsi & akun admin dashboard"
+.venv/bin/python -m bot init
+
 echo "==> Sinkronisasi jam (penting untuk tanda tangan API)"
 sudo timedatectl set-ntp true || true
 
@@ -31,12 +38,15 @@ sudo systemctl daemon-reload
 
 echo
 echo "Selesai. Langkah berikutnya:"
-echo "  1. nano .env           -> isi API key TAPI v2 (dan Telegram, opsional)"
-echo "  2. nano config.yaml    -> sesuaikan pair & risiko (biarkan mode: paper dulu)"
+echo "  1. sudo systemctl enable --now indodax-bot-web   (dashboard web)"
+echo "  2. Buka dashboard (lihat README bagian Dashboard), login, lalu di menu Pengaturan:"
+echo "     - isi API key Indodax (TAPI v2)"
+echo "     - atur pair & stop loss per pair (biarkan mode SIMULASI dulu)"
 echo "  3. .venv/bin/python -m bot check"
 echo "  4. .venv/bin/python -m bot backtest --days 60"
-echo "  5. sudo systemctl enable --now indodax-bot   (jalankan 24 jam)"
-echo "  6. journalctl -u indodax-bot -f              (lihat log)"
-echo "  7. sudo systemctl enable --now indodax-bot-web  (dashboard web, lihat README bagian Dashboard)"
+echo "  5. sudo systemctl enable --now indodax-bot       (bot jalan 24 jam)"
+echo "  6. journalctl -u indodax-bot -f                  (lihat log)"
+echo
+echo "PENTING: simpan cadangan BOT_MASTER_KEY dari file .env di tempat aman."
 echo
 echo "IP publik VPS ini (untuk IP whitelist API key): $(curl -4 -s --max-time 5 ifconfig.me || echo 'cek manual: curl -4 ifconfig.me')"

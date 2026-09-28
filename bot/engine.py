@@ -12,6 +12,7 @@ from .config import TIMEFRAMES
 from .market import Market, Quote
 from .notifier import Notifier
 from .state import BotState, Position, StateStore, fmt_time, today_wib
+from .settings import pair_cfg
 from .strategy import ExitRules, TrendStrategy
 
 log = logging.getLogger("bot.engine")
@@ -41,7 +42,7 @@ def px(p: float) -> str:
 
 class Engine:
     def __init__(self, cfg: dict, market: Market, broker, store: StateStore, notifier: Notifier,
-                 clock=time.time, sleep=time.sleep):
+                 clock=time.time, sleep=time.sleep, config_source=None):
         self.cfg = cfg
         self.market = market
         self.broker = broker
@@ -49,11 +50,9 @@ class Engine:
         self.notify = notifier
         self.clock = clock
         self.sleep = sleep
-        self.strategy = TrendStrategy(cfg)
-        self.exits = ExitRules(cfg)
-        self.risk = cfg["risk"]
-        self.tf = cfg["timeframe"]
-        self.step = TIMEFRAMES[self.tf]
+        self.config_source = config_source
+        self.exit_code = 0
+        self._apply(cfg)
         self.state: BotState = store.load()
         if broker.mode == "paper":
             broker.bal = self.state.paper_balances = self.state.paper_balances or broker.bal
@@ -64,10 +63,29 @@ class Engine:
         self._last_heartbeat = 0.0
         self._day = today_wib(self.clock())
         self._stop = False
+        self._pairs_stale = False
         self.last_signals: Dict[str, dict] = {}
 
     # ------------------------------------------------------------------ setup
-    def startup(self) -> None:
+    def _apply(self, cfg: dict) -> None:
+        self.cfg = cfg
+        self.strategy = TrendStrategy(cfg)
+        self.exits = ExitRules(cfg)
+        self._exits_cache: Dict[str, ExitRules] = {}
+        self.risk = cfg["risk"]
+        self.tf = cfg["timeframe"]
+        self.step = TIMEFRAMES[self.tf]
+
+    def exits_for(self, pair: str) -> ExitRules:
+        """Aturan jual untuk pair ini (stop loss / TP / trailing khusus pair jika diatur)."""
+        if pair not in self._exits_cache:
+            self._exits_cache[pair] = ExitRules(pair_cfg(self.cfg, pair))
+        return self._exits_cache[pair]
+
+    def idr_for(self, pair: str) -> float:
+        return float(pair_cfg(self.cfg, pair)["risk"]["idr_per_trade"])
+
+    def _validate_pairs(self) -> list:
         pairs = self.market.load_pairs()
         valid = []
         for p in self.cfg["pairs"]:
@@ -75,20 +93,46 @@ class Engine:
                 log.error("Pair %s tidak ditemukan di Indodax — dilewati", p)
                 continue
             info = pairs[p]
-            if info.min_idr and self.risk["idr_per_trade"] < info.min_idr:
-                log.error("Pair %s: idr_per_trade %s < minimum order %s — dilewati",
-                          p, rp(self.risk["idr_per_trade"]), rp(info.min_idr))
+            if info.min_idr and self.idr_for(p) < info.min_idr:
+                log.error("Pair %s: modal per transaksi %s < minimum order %s — dilewati",
+                          p, rp(self.idr_for(p)), rp(info.min_idr))
                 continue
             valid.append(p)
         if not valid:
-            raise SystemExit("Tidak ada pair valid untuk dijalankan.")
-        self.pairs = valid
+            log.warning("Tidak ada pair aktif yang valid — bot hanya menjaga posisi yang sudah terbuka.")
+        return valid
+
+    def startup(self) -> None:
+        self.pairs = self._validate_pairs()
         if self.broker.mode == "live":
             self._reconcile()
         self.store.save(self.state)
         self.notify.send(
-            f"Bot aktif ({self.broker.mode.upper()}). Pair: {', '.join(self.pairs)} | TF {self.tf}m | "
+            f"Bot aktif ({self.broker.mode.upper()}). Pair: {', '.join(self.pairs) or '-'} | TF {self.tf}m | "
             f"{rp(self.risk['idr_per_trade'])}/trade | posisi terbuka: {len(self.state.positions)}")
+
+    def reload(self, cfg: dict) -> None:
+        """Terapkan pengaturan baru dari database tanpa restart."""
+        if cfg["mode"] != self.broker.mode:
+            self.notify.send(f"Mode diubah ke {cfg['mode'].upper()} — bot dimulai ulang otomatis.")
+            self.exit_code = 75
+            self._stop = True
+            return
+        old_pairs = list(self.pairs)
+        self._apply(cfg)
+        self.notify.update(self.notify.token, self.notify.chat_id, cfg["telegram"]["enabled"])
+        try:
+            self.pairs = self._validate_pairs()
+            self._pairs_stale = False
+        except Exception:
+            # daftar pair Indodax gagal dimuat: jangan terus membeli pair yang sudah dinonaktifkan;
+            # pair baru divalidasi ulang di tick berikutnya
+            self.pairs = [p for p in old_pairs if p in cfg["pairs"]]
+            self._pairs_stale = True
+            raise
+        log.info("Pengaturan baru diterapkan. Pair aktif: %s", ", ".join(self.pairs) or "-")
+        if old_pairs != self.pairs:
+            self.notify.send(f"Pengaturan diperbarui. Pair aktif: {', '.join(self.pairs) or '-'}")
 
     def _reconcile(self) -> None:
         """Pastikan posisi di state masih sesuai saldo nyata (mis. jika Anda menjual manual)."""
@@ -139,8 +183,43 @@ class Engine:
         while not self._stop and time.monotonic() < end:
             self.sleep(min(1.0, end - time.monotonic()))
 
+    def _poll_config(self) -> None:
+        src = self.config_source
+        if not src:
+            return
+        try:
+            cfg = src.poll_config()
+            if cfg is not None:
+                self.reload(cfg)
+            elif self._pairs_stale:
+                self.pairs = self._validate_pairs()
+                self._pairs_stale = False
+                log.info("Pair aktif: %s", ", ".join(self.pairs) or "-")
+            creds = src.poll_credentials()
+            if creds is not None:
+                self._apply_credentials(creds)
+        except Exception as e:
+            log.warning("Gagal membaca pengaturan dari database: %s", e)
+            self.notify.send(f"Gagal membaca pengaturan dari database: {e}", key="cfgerr", min_interval=1800)
+
+    def _apply_credentials(self, creds: dict) -> None:
+        self.notify.update(creds.get("telegram_token", ""), creds.get("telegram_chat_id", ""),
+                           self.cfg["telegram"]["enabled"])
+        api = getattr(self.broker, "api", None)
+        if api is not None and creds.get("api_key") and creds.get("secret_key"):
+            if (creds["api_key"], creds["secret_key"]) != (api.api_key, api.secret.decode()):
+                api.api_key = creds["api_key"]
+                api.secret = creds["secret_key"].encode()
+                api.sync_time()
+                if self.entries_blocked and "API" in self.entries_blocked:
+                    self.entries_blocked = None
+                self.notify.send("API key Indodax diperbarui dan langsung dipakai bot.")
+
     def tick(self) -> None:
         now = self.clock()
+        self._poll_config()
+        if self._stop:
+            return
         self._day_rollover(now)
         quotes = self.market.quotes()
 
@@ -159,7 +238,7 @@ class Engine:
             price = q.bid if q.bid > 0 else q.last
             if price > pos.highest:
                 pos.highest = price
-            reason = self.exits.check(pos.entry_price, pos.highest, price, pos.opened_at, now)
+            reason = self.exits_for(pair).check(pos.entry_price, pos.highest, price, pos.opened_at, now)
             if reason:
                 try:
                     self._close(pair, q, reason)
@@ -219,7 +298,7 @@ class Engine:
         if len(active) >= self.risk["max_open_positions"]:
             return "jumlah posisi maksimum tercapai"
         exposure = sum(p.cost_idr for p in active)
-        if exposure + self.risk["idr_per_trade"] > self.risk["max_total_exposure_idr"]:
+        if exposure + self.idr_for(pair) > self.risk["max_total_exposure_idr"]:
             return f"eksposur total akan melebihi {rp(self.risk['max_total_exposure_idr'])}"
         if q.spread_pct > self.risk["max_spread_pct"]:
             return f"spread {q.spread_pct:.2f}% terlalu lebar"
@@ -232,7 +311,7 @@ class Engine:
         if block:
             log.info("%s: sinyal beli diabaikan — %s", pair, block)
             return
-        idr = float(self.risk["idr_per_trade"])
+        idr = self.idr_for(pair)
         try:
             free_idr = self.broker.balances().get("idr", (0.0, 0.0))[0]
             if free_idr - idr < self.risk["min_idr_reserve"]:
@@ -257,7 +336,7 @@ class Engine:
         self.store.log_trade(pair=pair, side="BUY", qty=fill.qty, price=fill.avg_price, idr=fill.net_idr,
                              fee_idr=fill.fee_idr, reason=why, order_id=fill.order_id)
         self.store.save(self.state)
-        stop, _, tp = self.exits.levels(fill.avg_price, fill.avg_price)
+        stop, _, tp = self.exits_for(pair).levels(fill.avg_price, fill.avg_price)
         self.notify.send(
             f"BELI {pair.upper()} ({self.broker.mode})\n"
             f"Qty {fill.qty:.8g} @ {px(fill.avg_price)}\nTotal {rp(fill.net_idr)} (fee {rp(fill.fee_idr)})\n"
@@ -381,7 +460,7 @@ class Engine:
                 }
             positions = {}
             for pair, pos in self.state.positions.items():
-                stop, stop_reason, tp = self.exits.levels(pos.entry_price, pos.highest)
+                stop, stop_reason, tp = self.exits_for(pair).levels(pos.entry_price, pos.highest)
                 positions[pair] = {"stop": stop, "stop_reason": stop_reason, "take_profit": tp}
             paper_eq = None
             if self.broker.mode == "paper":
