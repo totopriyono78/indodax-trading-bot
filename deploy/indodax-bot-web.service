@@ -1,0 +1,14 @@
+[Unit]
+Description=Dashboard web bot Indodax
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python -m bot web
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

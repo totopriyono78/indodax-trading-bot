@@ -1,0 +1,19 @@
+[Unit]
+Description=Bot trading Indodax
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+# Untuk mode live, bot butuh --yes-live karena systemd tidak bisa menjawab konfirmasi.
+ExecStart=__DIR__/.venv/bin/python -m bot run --yes-live
+Restart=always
+RestartSec=15
+# Beri waktu bot menyimpan state saat dihentikan
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
