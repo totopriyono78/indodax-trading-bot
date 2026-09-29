@@ -15,6 +15,7 @@
     <div>
       <h1>Bot Indodax <span id="mode" class="badge">—</span></h1>
       <div class="pill" id="alive"><span class="dot"></span><span>Memuat…</span></div>
+      <div class="uptime" id="uptime"></div>
     </div>
     <div class="controls" id="controls" hidden>
       <button id="btn-pause">Pause pembelian</button>
@@ -102,6 +103,15 @@ function wib(ts) {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
+function uptime(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  const parts = [];
+  if (d) parts.push(d + " hari");
+  if (d || h) parts.push(h + " jam");
+  parts.push(m + " menit");
+  return parts.join(", ");
+}
 function dur(sec) {
   if (sec < 3600) return Math.max(1, Math.round(sec / 60)) + " mnt";
   if (sec < 86400) return (sec / 3600).toFixed(1).replace(".", ",") + " jam";
@@ -131,6 +141,17 @@ function render(d) {
   const colors = { good: "var(--good)", warning: "var(--warning)", critical: "var(--critical)", unknown: "var(--muted)" };
   const icons = { good: "●", warning: "▲", critical: "✕", unknown: "○" };
   $("alive").innerHTML = `<b style="color:${colors[d.alive]}">${icons[d.alive]}</b><span>${esc(d.alive_label)}</span>`;
+
+  // lama bot berjalan
+  if (d.running_since) {
+    const since = new Date(d.running_since * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    const restart = d.session_since && d.session_since - d.running_since > 120
+      ? ` · dinyalakan ulang terakhir ${uptime(d.now - d.session_since)} lalu` : "";
+    $("uptime").innerHTML = `Bot ${d.mode === "live" ? "LIVE" : "simulasi"} sudah berjalan <b>${uptime(d.now - d.running_since)}</b>
+      <span class="muted">· sejak ${esc(since)} WIB${restart}</span>`;
+  } else {
+    $("uptime").textContent = "";
+  }
 
   // kontrol
   $("controls").hidden = !d.allow_control;

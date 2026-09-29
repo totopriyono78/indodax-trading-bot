@@ -124,3 +124,6 @@ input.small::placeholder { color: var(--muted); }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; margin: 6px 0 10px; }
 .legend span { display: inline-flex; gap: 5px; align-items: center; }
 @media (max-width: 420px) { .pc-grid { grid-template-columns: 1fr; } }
+
+.uptime { font-size: 13px; color: var(--text-2); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.uptime b { color: var(--text); }

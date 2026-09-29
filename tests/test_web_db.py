@@ -537,3 +537,33 @@ def test_engine_with_db_store_and_db_logs(tmp_path):
         h.close()
     msgs = [r["message"] for r in ctx.db.tail_logs(50)]
     assert any("BELI" in m or "Bot aktif" in m for m in msgs)
+
+
+def test_uptime_duration_format_and_tracking(tmp_path):
+    from bot.state import DbStateStore, fmt_duration
+    assert fmt_duration(10 * 86400 + 5 * 3600 + 10 * 60 + 59) == "10 hari, 5 jam, 10 menit"
+    assert fmt_duration(3 * 86400 + 7 * 60) == "3 hari, 0 jam, 7 menit"
+    assert fmt_duration(2 * 3600 + 60) == "2 jam, 1 menit"
+    assert fmt_duration(59) == "0 menit"
+    from bot.broker import PaperBroker
+    from bot.engine import Engine
+    from bot.market import Market
+    from bot.notifier import Notifier
+    from bot.web import build_summary
+    from .fakes import FakePublic, STEP
+    from .test_bot import Clock, cfg_for
+    ctx = make_ctx(tmp_path)
+    cfg = cfg_for(tmp_path)
+    t0 = (int(time.time() // STEP) + 1) * STEP + 5
+    pub = FakePublic({"BTCIDR": trend_series()[:150]}, now=t0)
+    store = DbStateStore(ctx.db, "paper")
+    eng = Engine(cfg, Market(pub), PaperBroker(cfg, {}), store, Notifier(), clock=Clock(t0))
+    eng.startup(); eng.tick()
+    assert store.load().first_started_at == t0
+    # "restart" 3 hari kemudian: waktu mulai pertama tetap, sesi baru
+    t1 = t0 + 3 * 86400 + 2 * 3600
+    pub.now = t1
+    eng2 = Engine(cfg, Market(pub), PaperBroker(cfg, {}), DbStateStore(ctx.db, "paper"), Notifier(), clock=Clock(t1))
+    eng2.startup(); eng2.tick()
+    d = build_summary(cfg, DbStateStore(ctx.db, "paper"))
+    assert d["running_since"] == t0 and d["session_since"] == t1

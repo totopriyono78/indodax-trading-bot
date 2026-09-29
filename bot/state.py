@@ -18,6 +18,21 @@ def today_wib(ts: Optional[float] = None) -> str:
     return datetime.fromtimestamp(ts or time.time(), WIB).strftime("%Y-%m-%d")
 
 
+def fmt_duration(seconds: float) -> str:
+    """Contoh: 10 hari, 5 jam, 10 menit  (unit nol di depan dihilangkan)."""
+    seconds = max(0, int(seconds))
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    parts = []
+    if d:
+        parts.append(f"{d} hari")
+    if d or h:
+        parts.append(f"{h} jam")
+    parts.append(f"{m} menit")
+    return ", ".join(parts)
+
+
 def fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts, WIB).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -52,6 +67,7 @@ class BotState:
     total_realized: float = 0.0
     trades_count: int = 0
     wins: int = 0
+    first_started_at: float = 0.0   # kapan bot (mode ini) pertama kali dijalankan
 
 
 class StateStore:

@@ -133,6 +133,8 @@ def build_summary(cfg: dict, store=None) -> dict:
         "halted_today": halted,
         "entries_blocked": status.get("entries_blocked"),
         "timeframe": cfg["timeframe"],
+        "running_since": st.first_started_at or status.get("first_started_at") or None,
+        "session_since": status.get("session_started_at"),
         "pnl_today": st.daily_pnl.get(today_wib(now), 0.0),
         "pnl_month": month_pnl,
         "pnl_total": st.total_realized,

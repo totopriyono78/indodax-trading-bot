@@ -11,7 +11,7 @@ from .client import IndodaxError
 from .config import TIMEFRAMES
 from .market import Market, Quote
 from .notifier import Notifier
-from .state import BotState, Position, StateStore, fmt_time, today_wib
+from .state import BotState, Position, StateStore, fmt_duration, fmt_time, today_wib
 from .settings import pair_cfg
 from .strategy import ExitRules, TrendStrategy
 
@@ -102,6 +102,9 @@ class Engine:
         return valid
 
     def startup(self) -> None:
+        self.started_at = self.clock()
+        if not self.state.first_started_at:
+            self.state.first_started_at = self.started_at
         self.pairs = self._validate_pairs()
         if self.broker.mode == "live":
             self._reconcile()
@@ -440,7 +443,9 @@ class Engine:
         wr = (self.state.wins / self.state.trades_count * 100) if self.state.trades_count else 0
         self.notify.send(f"Ringkasan {prev}: PnL {rp(pnl)} | total terealisasi {rp(self.state.total_realized)} | "
                          f"{self.state.trades_count} transaksi, win rate {wr:.0f}% | "
-                         f"posisi terbuka {len(self.state.positions)}")
+                         f"posisi terbuka {len(self.state.positions)}"
+                         + (f" | bot berjalan {fmt_duration(self.clock() - self.state.first_started_at)}"
+                            if self.state.first_started_at else ""))
         api = getattr(self.broker, "api", None)
         if api:
             api.sync_time()
@@ -468,6 +473,8 @@ class Engine:
                     if c != "idr" and c + "idr" in quotes)
             self.store.write_status({
                 "ts": now, "mode": self.broker.mode, "timeframe": self.tf,
+                "session_started_at": getattr(self, "started_at", now),
+                "first_started_at": self.state.first_started_at,
                 "poll_seconds": self.cfg["poll_seconds"], "entries_blocked": self.entries_blocked,
                 "pairs": pairs, "levels": positions, "paper_equity": paper_eq,
                 "paper_balances": dict(self.broker.bal) if self.broker.mode == "paper" else None,
