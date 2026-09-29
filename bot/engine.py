@@ -56,7 +56,6 @@ class Engine:
         self.state: BotState = store.load()
         if broker.mode == "paper":
             broker.bal = self.state.paper_balances = self.state.paper_balances or broker.bal
-        self.flags = Path(cfg["data_dir"])
         self.entries_blocked: Optional[str] = None
         self._retry_after: Dict[str, float] = {}
         self._candle_try: Dict[str, float] = {}
@@ -223,10 +222,10 @@ class Engine:
         self._day_rollover(now)
         quotes = self.market.quotes()
 
-        if (self.flags / "SELLALL").exists():
+        if self.store.flag("SELLALL"):
             self._sell_all(quotes)
             if not any(not p.dust for p in self.state.positions.values()):
-                (self.flags / "SELLALL").unlink(missing_ok=True)
+                self.store.set_flag("SELLALL", False)
                 self.notify.send("SELLALL selesai. Pembelian baru tetap di-pause sampai Anda menjalankan `resume`.")
 
         # 1) Cek TP / SL / trailing untuk setiap posisi terbuka — setiap tick
@@ -288,8 +287,8 @@ class Engine:
         now = self.clock()
         if self.entries_blocked:
             return self.entries_blocked
-        if (self.flags / "PAUSE").exists():
-            return "bot di-pause (file PAUSE)"
+        if self.store.flag("PAUSE"):
+            return "bot di-pause"
         if self.state.halted_day == today_wib(now):
             return "batas rugi harian tercapai"
         if self.state.cooldown_until.get(pair, 0) > now:

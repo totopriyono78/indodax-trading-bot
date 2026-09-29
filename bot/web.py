@@ -26,7 +26,7 @@ from .client import IndodaxError, PrivateClientV2, PublicClient
 from .config import TIMEFRAMES, ConfigError
 from .db import SecretError
 from .settings import PAIR_FIELDS, pair_cfg
-from .state import WIB, StateStore, today_wib
+from .state import WIB, DbStateStore, StateStore, today_wib
 
 log = logging.getLogger("bot.web")
 HERE = Path(__file__).parent
@@ -43,12 +43,11 @@ def _f(x, default=0.0):
         return default
 
 
-def build_summary(cfg: dict) -> dict:
-    store = StateStore(cfg["data_dir"], cfg["mode"])
+def build_summary(cfg: dict, store=None) -> dict:
+    store = store or StateStore(cfg["data_dir"], cfg["mode"])
     st = store.load()
     status = store.read_status() or {}
     now = time.time()
-    flags = Path(cfg["data_dir"])
     pairs_status = status.get("pairs", {})
     levels = status.get("levels", {})
     poll = cfg["poll_seconds"]
@@ -114,20 +113,23 @@ def build_summary(cfg: dict) -> dict:
     exposure = sum(p.cost_idr for p in st.positions.values() if not p.dust)
     halted = st.halted_day == today_wib(now)
     storage_warning = None
-    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_ENVIRONMENT_NAME"):
-        if not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
-            storage_warning = ("Data bot (posisi, jurnal transaksi" +
-                               ("" if os.environ.get("DATABASE_URL") else ", database pengaturan & API key") +
-                               ") tersimpan di disk sementara Railway dan AKAN HILANG saat redeploy. "
-                               "Tambahkan Volume pada service ini (mount path: /app/data).")
+    on_railway = os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_ENVIRONMENT_NAME")
+    if on_railway and not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+        if not os.environ.get("DATABASE_URL", "").startswith(("postgres", "mysql")):
+            storage_warning = ("Database SQLite tersimpan di disk sementara Railway dan AKAN HILANG saat redeploy "
+                               "(posisi, jurnal transaksi, pengaturan, API key). Tambahkan PostgreSQL "
+                               "(DATABASE_URL) atau Volume di /app/data.")
+        elif not os.environ.get("BOT_MASTER_KEY"):
+            storage_warning = ("Variabel BOT_MASTER_KEY belum diisi, sehingga API key tidak bisa disimpan. "
+                               "Isi BOT_MASTER_KEY di Variables Railway.")
     return {
         "storage_warning": storage_warning,
         "version": __version__,
         "now": now,
         "mode": cfg["mode"],
         "alive": alive, "alive_label": alive_label,
-        "paused": (flags / "PAUSE").exists(),
-        "sellall_pending": (flags / "SELLALL").exists(),
+        "paused": store.flag("PAUSE"),
+        "sellall_pending": store.flag("SELLALL"),
         "halted_today": halted,
         "entries_blocked": status.get("entries_blocked"),
         "timeframe": cfg["timeframe"],
@@ -160,12 +162,9 @@ def build_summary(cfg: dict) -> dict:
     }
 
 
-def tail_log(cfg: dict, lines: int = 120) -> list:
-    path = Path(cfg["data_dir"]) / "bot.log"
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8", errors="replace") as f:
-        return [ln.rstrip("\n") for ln in deque(f, maxlen=lines)]
+def tail_log(db, lines: int = 120) -> list:
+    rows = db.tail_logs(lines) if db is not None else []
+    return [r["message"] for r in rows]
 
 
 def _is_loopback(host: str) -> bool:
@@ -253,7 +252,7 @@ class ChartCache:
         return data
 
 
-def build_chart(cfg: dict, charts: ChartCache, pair: str, period: str) -> dict:
+def build_chart(cfg: dict, charts: ChartCache, pair: str, period: str, store=None) -> dict:
     if period not in CHART_PERIODS:
         raise ValueError("periode tidak dikenal")
     if not re.fullmatch(r"[a-z0-9]{1,20}idr", pair or ""):
@@ -261,12 +260,12 @@ def build_chart(cfg: dict, charts: ChartCache, pair: str, period: str) -> dict:
     candles = charts.candles(pair, period)
     tf, days = CHART_PERIODS[period]
     start = (candles[0][0] if candles else time.time() - days * 86400)
-    store = StateStore(cfg["data_dir"], cfg["mode"])
+    store = store or StateStore(cfg["data_dir"], cfg["mode"])
     trades = []
     for t in store.read_trades():
         if t.get("pair") != pair:
             continue
-        ts = _wib_to_ts(t.get("waktu_wib", ""))
+        ts = t.get("ts") or _wib_to_ts(t.get("waktu_wib", ""))
         if ts < start:
             continue
         trades.append({"t": ts, "side": t.get("sisi"), "price": _f(t.get("harga")), "qty": _f(t.get("qty")),
@@ -330,6 +329,9 @@ def make_handler(ctx, setup_token: dict):
 
     def cfg_now():
         return svc.load()
+
+    def store_for(mode):
+        return DbStateStore(db, mode)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "IndodaxBotDashboard"
@@ -448,9 +450,10 @@ def make_handler(ctx, setup_token: dict):
                 if path == "/api/me":
                     return self._json({"username": sess["username"], "csrf": sess["csrf"]})
                 if path == "/api/summary":
-                    return self._json(build_summary(cfg_now()))
+                    cfg = cfg_now()
+                    return self._json(build_summary(cfg, store_for(cfg["mode"])))
                 if path == "/api/log":
-                    return self._json({"lines": tail_log(cfg_now())})
+                    return self._json({"lines": tail_log(db)})
                 if path == "/api/settings":
                     return self._json(self._settings_payload())
                 if path == "/api/market/pairs":
@@ -463,7 +466,8 @@ def make_handler(ctx, setup_token: dict):
                     pair = (qs.get("pair") or [""])[0].lower()
                     period = (qs.get("period") or ["1d"])[0]
                     try:
-                        return self._json(build_chart(cfg_now(), charts, pair, period))
+                        cfg = cfg_now()
+                        return self._json(build_chart(cfg, charts, pair, period, store_for(cfg["mode"])))
                     except ValueError as e:
                         return self._json({"error": str(e)}, 400)
                     except KeyError as e:
@@ -476,7 +480,7 @@ def make_handler(ctx, setup_token: dict):
         def _settings_payload(self):
             cfg = cfg_now()
             info = db.secret_info()
-            positions = StateStore(cfg["data_dir"], cfg["mode"]).load().positions
+            positions = store_for(cfg["mode"]).load().positions
             return {
                 "sections": svc.sections(),
                 "effective": {p: {"exits": pair_cfg(cfg, p)["exits"], "idr_per_trade": pair_cfg(cfg, p)["risk"]["idr_per_trade"]}
@@ -587,16 +591,16 @@ def make_handler(ctx, setup_token: dict):
             cfg = cfg_now()
             if not cfg["dashboard"]["allow_control"]:
                 return self._json({"error": "Tombol kontrol dinonaktifkan di pengaturan."}, 403)
-            flags = Path(cfg["data_dir"])
+            st = store_for(cfg["mode"])
             if action == "pause":
-                (flags / "PAUSE").touch()
+                st.set_flag("PAUSE", True)
                 msg = "Pembelian baru di-pause. Posisi terbuka tetap dijaga TP/SL."
             elif action == "resume":
-                (flags / "PAUSE").unlink(missing_ok=True)
+                st.set_flag("PAUSE", False)
                 msg = "Bot kembali boleh membuka posisi baru."
             elif action == "sellall":
-                (flags / "PAUSE").touch()
-                (flags / "SELLALL").touch()
+                st.set_flag("PAUSE", True)
+                st.set_flag("SELLALL", True)
                 msg = "Perintah jual semua dikirim. Bot akan memprosesnya dalam beberapa detik; pembelian baru di-pause."
             else:
                 return self._json({"error": "aksi tidak dikenal"}, 404)
@@ -622,7 +626,7 @@ def make_handler(ctx, setup_token: dict):
                 cur = cfg_now()["mode"]
                 new_mode = value.get("mode", cur)
                 if cur == "live" and new_mode == "paper":
-                    live_pos = [p for p, pos in StateStore(cfg_now()["data_dir"], "live").load().positions.items()
+                    live_pos = [p for p, pos in store_for("live").load().positions.items()
                                 if not pos.dust]
                     if live_pos:
                         return self._json({"error": "Masih ada posisi LIVE terbuka (" + ", ".join(live_pos).upper()

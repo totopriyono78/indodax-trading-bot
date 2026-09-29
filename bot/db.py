@@ -63,6 +63,37 @@ audit_t = Table(
     Column("detail", Text, nullable=False, default=""),
     Column("ip", String(64), nullable=False, default=""),
 )
+kv_t = Table(                         # state & status bot per mode (JSON)
+    "bot_kv", metadata,
+    Column("kind", String(32), primary_key=True),
+    Column("mode", String(16), primary_key=True),
+    Column("value", Text, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+trades_t = Table(
+    "trades", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", Float, nullable=False, index=True),
+    Column("mode", String(16), nullable=False, index=True),
+    Column("pair", String(32), nullable=False),
+    Column("side", String(8), nullable=False),
+    Column("qty", Float, nullable=False),
+    Column("price", Float, nullable=False),
+    Column("idr", Float, nullable=False),
+    Column("fee_idr", Float, nullable=False, default=0),
+    Column("pnl_idr", Float),
+    Column("pnl_pct", Float),
+    Column("reason", String(255), nullable=False, default=""),
+    Column("order_id", String(128), nullable=False, default=""),
+)
+logs_t = Table(
+    "logs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", Float, nullable=False),
+    Column("level", String(10), nullable=False),
+    Column("source", String(16), nullable=False, default=""),
+    Column("message", Text, nullable=False),
+)
 meta_t = Table(
     "meta", metadata,
     Column("key", String(64), primary_key=True),
@@ -295,3 +326,47 @@ class Database:
         with self.engine.connect() as c:
             rows = c.execute(select(audit_t).order_by(audit_t.c.id.desc()).limit(limit)).all()
         return [dict(r._mapping) for r in rows]
+
+
+    # ------------------------------------------------------------ state/status bot (JSON per mode)
+    def kv_get(self, kind: str, mode: str):
+        with self.engine.connect() as c:
+            row = c.execute(select(kv_t.c.value).where(kv_t.c.kind == kind, kv_t.c.mode == mode)).first()
+        return json.loads(row[0]) if row else None
+
+    def kv_put(self, kind: str, mode: str, value) -> None:
+        data, now = json.dumps(value), time.time()
+        with self.engine.begin() as c:
+            r = c.execute(update(kv_t).where(kv_t.c.kind == kind, kv_t.c.mode == mode)
+                          .values(value=data, updated_at=now))
+            if not r.rowcount:
+                c.execute(insert(kv_t).values(kind=kind, mode=mode, value=data, updated_at=now))
+
+    # ------------------------------------------------------------ jurnal transaksi
+    def add_trade(self, **row) -> None:
+        with self.engine.begin() as c:
+            c.execute(insert(trades_t).values(**row))
+
+    def list_trades(self, mode: str, limit: int = 0) -> list:
+        q = select(trades_t).where(trades_t.c.mode == mode)
+        with self.engine.connect() as c:
+            if limit:
+                rows = c.execute(q.order_by(trades_t.c.id.desc()).limit(limit)).all()[::-1]
+            else:
+                rows = c.execute(q.order_by(trades_t.c.id)).all()
+        return [dict(r._mapping) for r in rows]
+
+    # ------------------------------------------------------------ log
+    def add_logs(self, rows: list, keep: int = 3000) -> None:
+        if not rows:
+            return
+        with self.engine.begin() as c:
+            c.execute(insert(logs_t), rows)
+            last = c.execute(select(func.max(logs_t.c.id))).scalar() or 0
+            if last > keep:
+                c.execute(delete(logs_t).where(logs_t.c.id <= last - keep))
+
+    def tail_logs(self, n: int = 120) -> list:
+        with self.engine.connect() as c:
+            rows = c.execute(select(logs_t).order_by(logs_t.c.id.desc()).limit(n)).all()
+        return [dict(r._mapping) for r in rows[::-1]]

@@ -18,7 +18,12 @@ from .test_bot import build_engine, find_buy_index
 
 def make_ctx(tmp_path, key=None):
     boot = {"data_dir": str(tmp_path), "dashboard": {"host": "127.0.0.1", "port": 0}, "_raw": {}}
-    db = Database(f"sqlite:///{tmp_path / 'bot.db'}", key or generate_master_key())
+    import os
+    url = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'bot.db'}"   # uji juga di PostgreSQL
+    db = Database(url, key or generate_master_key())
+    if os.environ.get("TEST_DATABASE_URL"):
+        from bot.db import metadata
+        metadata.drop_all(db.engine)
     db.create_all()
     svc = SettingsService(db, boot)
     svc.ensure_seeded({"pairs": ["btcidr", "pepeidr"]})
@@ -371,13 +376,13 @@ def test_negative_content_length_rejected(server):
 
 
 def test_cannot_switch_to_paper_with_open_live_positions(server):
-    from bot.state import Position, StateStore
+    from bot.state import DbStateStore, Position
     ctx, url, _ = server
     ctx.db.add_user("admin", "password-kuat-1")
     ctx.db.set_secret("indodax_api_key", "KEY-1234567890")
     ctx.db.set_secret("indodax_secret_key", "s" * 40)
     ctx.svc.update("general", {"mode": "live"})
-    store = StateStore(ctx.boot["data_dir"], "live")
+    store = DbStateStore(ctx.db, "live")
     st = store.load()
     st.positions["pepeidr"] = Position("pepeidr", 1000, 0.16, 100000, time.time(), 0.16, "live")
     store.save(st)
@@ -419,7 +424,7 @@ def test_master_key_file_fallback(tmp_path, monkeypatch):
 
 def test_chart_endpoint_candles_trades_position(server):
     import bot.web as W
-    from bot.state import Position, StateStore, fmt_time
+    from bot.state import DbStateStore, Position
     from .fakes import FakePublic
     ctx, url, _ = server
     ctx.db.add_user("admin", "password-kuat-1")
@@ -432,7 +437,7 @@ def test_chart_endpoint_candles_trades_position(server):
         if isinstance(obj, W.ChartCache):
             obj.market.public = fp
             obj.cache.clear()
-    store = StateStore(ctx.boot["data_dir"], "paper")
+    store = DbStateStore(ctx.db, "paper")
     store.log_trade(pair="pepeidr", side="BUY", qty=10, price=110, idr=100000, fee_idr=300, reason="tren naik")
     store.log_trade(pair="btcidr", side="BUY", qty=1, price=105, idr=100000)
     st = store.load()
@@ -448,3 +453,87 @@ def test_chart_endpoint_candles_trades_position(server):
     assert s.get(url + "/api/chart?pair=../../etc&period=1d").status_code == 400
     assert s.get(url + "/api/chart?pair=pepeidr&period=5y").status_code == 400
     assert rq.get(url + "/api/chart?pair=pepeidr&period=1d").status_code == 401
+
+
+
+# ---------------- penyimpanan di database ----------------
+def test_db_store_roundtrip_flags_trades(tmp_path):
+    from bot.state import DbStateStore, Position
+    ctx = make_ctx(tmp_path)
+    st_store = DbStateStore(ctx.db, "paper")
+    st = st_store.load()
+    assert not st.positions
+    st.positions["btcidr"] = Position("btcidr", 0.001, 1.7e9, 100000, 1.0, 1.7e9, "paper")
+    st.daily_pnl["2026-09-29"] = 1234.5
+    st.paper_balances = {"idr": 900000}
+    st_store.save(st)
+    st_store.save(st)                                             # update, bukan insert ganda
+    again = DbStateStore(ctx.db, "paper").load()
+    assert again.positions["btcidr"].entry_price == 1.7e9 and again.daily_pnl["2026-09-29"] == 1234.5
+    assert DbStateStore(ctx.db, "live").load().positions == {}   # mode terpisah
+    st_store.log_trade(pair="btcidr", side="BUY", qty=0.001, price=1.7e9, idr=100000, fee_idr=300)
+    st_store.log_trade(pair="btcidr", side="SELL", qty=0.001, price=1.8e9, idr=105000, pnl_idr=5000, pnl_pct=5,
+                       reason="take_profit")
+    rows = st_store.read_trades()
+    assert [r["sisi"] for r in rows] == ["BUY", "SELL"] and rows[1]["pnl_idr"] == "5000" and rows[0]["pnl_idr"] == ""
+    assert [r["sisi"] for r in st_store.read_trades(1)] == ["SELL"]
+    assert not st_store.flag("PAUSE")
+    st_store.set_flag("PAUSE"); assert DbStateStore(ctx.db, "live").flag("PAUSE")   # flag global
+    st_store.set_flag("PAUSE", False); assert not st_store.flag("PAUSE")
+    st_store.write_status({"ts": 5, "pairs": {}})
+    assert st_store.read_status()["ts"] == 5
+
+
+def test_import_old_files_once(tmp_path):
+    from bot.state import DbStateStore, Position, StateStore
+    ctx = make_ctx(tmp_path)
+    old = StateStore(str(tmp_path), "paper")
+    st = old.load(); st.positions["dogeidr"] = Position("dogeidr", 25, 4000, 100000, 1.0, 4000, "paper"); old.save(st)
+    old.log_trade(pair="dogeidr", side="BUY", qty=25, price=4000, idr=100000)
+    db_store = DbStateStore(ctx.db, "paper")
+    assert set(db_store.import_files(str(tmp_path))) == {"state_paper.json", "trades_paper.csv"}
+    assert "dogeidr" in db_store.load().positions and len(db_store.read_trades()) == 1
+    assert db_store.import_files(str(tmp_path)) == []                # tidak diimpor dua kali
+    assert (tmp_path / "state_paper.json.imported").exists()
+
+
+def test_engine_with_db_store_and_db_logs(tmp_path):
+    import logging
+    from bot.broker import PaperBroker
+    from bot.dblog import DbLogHandler
+    from bot.engine import Engine
+    from bot.market import Market
+    from bot.notifier import Notifier
+    from bot.state import DbStateStore
+    from .fakes import FakePublic, STEP
+    from .test_bot import Clock, cfg_for
+    ctx = make_ctx(tmp_path)
+    i = find_buy_index(tmp_path)
+    closes = trend_series()[: i + 1]
+    now = (int(time.time() // STEP) + 1) * STEP + 5
+    cfg = cfg_for(tmp_path, strategy={"rsi_max": 90})
+    pub = FakePublic({"BTCIDR": closes}, now=now)
+    store = DbStateStore(ctx.db, "paper")
+    h = DbLogHandler(ctx.db, "bot", flush_every=0.1)
+    root = logging.getLogger()
+    old_level = root.level
+    root.setLevel(logging.INFO)
+    root.addHandler(h)
+    try:
+        eng = Engine(cfg, Market(pub), PaperBroker(cfg, {}), store, Notifier(), clock=Clock(now))
+        eng.startup()
+        eng.tick()
+        assert "btcidr" in DbStateStore(ctx.db, "paper").load().positions       # tersimpan di DB
+        assert DbStateStore(ctx.db, "paper").read_trades()[0]["sisi"] == "BUY"
+        assert DbStateStore(ctx.db, "paper").read_status()["pairs"]["btcidr"]["last"] > 0
+        store.set_flag("SELLALL")
+        eng.clock.t += 20
+        eng.tick()
+        assert not DbStateStore(ctx.db, "paper").load().positions and not store.flag("SELLALL")
+        time.sleep(0.4)
+    finally:
+        root.removeHandler(h)
+        root.setLevel(old_level)
+        h.close()
+    msgs = [r["message"] for r in ctx.db.tail_logs(50)]
+    assert any("BELI" in m or "Bot aktif" in m for m in msgs)

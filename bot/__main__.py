@@ -33,7 +33,7 @@ from .settings import SettingsService, import_env_secrets, load_bootstrap, pair_
 from .engine import Engine, px, rp
 from .market import Market
 from .notifier import Notifier
-from .state import StateStore, fmt_time, today_wib
+from .state import DbStateStore, fmt_time, today_wib
 
 
 def setup_logging(data_dir: str, verbose: bool = False, filename: str = "bot.log") -> None:
@@ -47,6 +47,13 @@ def setup_logging(data_dir: str, verbose: bool = False, filename: str = "bot.log
     fh.setFormatter(fmt)
     root.handlers = [sh, fh]
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+def ephemeral_disk() -> bool:
+    """True jika berjalan di Railway tanpa Volume (disk hilang setiap redeploy)."""
+    import os
+    on_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_ENVIRONMENT_NAME"))
+    return on_railway and not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
 
 
 def load_master_key_file(data_dir: str, create: bool) -> None:
@@ -63,6 +70,11 @@ def load_master_key_file(data_dir: str, create: bool) -> None:
         os.environ["BOT_MASTER_KEY"] = f.read_text(encoding="utf-8").strip()
         return
     if not create:
+        return
+    if ephemeral_disk():
+        logging.getLogger("bot").error(
+            "BOT_MASTER_KEY belum diisi. Di Railway tanpa Volume, kunci tidak boleh disimpan di disk (akan hilang "
+            "saat redeploy dan API key tidak bisa dibuka lagi). Isi variabel BOT_MASTER_KEY di Railway.")
         return
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     f.write_text(generate_master_key(), encoding="utf-8")
@@ -92,29 +104,41 @@ class Ctx:
         self.svc = SettingsService(self.db, self.boot)
         if self.svc.ensure_seeded():
             logging.getLogger("bot").info("Database pengaturan diisi dari config.yaml / nilai default.")
-        self.last_good = Path(self.boot["data_dir"]) / "last_good_config.json"
+        for mode in ("paper", "live"):
+            moved = self.store_for(mode).import_files(self.boot["data_dir"])
+            if moved:
+                logging.getLogger("bot").info("Data lama dipindahkan ke database: %s", ", ".join(moved))
+        if cmd in ("run", "web", "all"):
+            from .dblog import DbLogHandler
+            h = DbLogHandler(self.db, "bot" if cmd == "run" else "web")
+            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+            logging.getLogger().addHandler(h)
         try:
             self.cfg = self.svc.load()
             validate_all(self.cfg)
             if getattr(args, "cmd", None) == "run":
-                self.last_good.write_text(json.dumps(self.cfg), encoding="utf-8")
+                self.db.kv_put("last_good_config", "all", self.cfg)
         except ConfigError as e:
             log = logging.getLogger("bot")
             cmd = getattr(args, "cmd", None)
             if cmd in ("web", "all"):
                 # dashboard tetap jalan agar pengaturan yang salah bisa diperbaiki dari web
                 log.error("%s", e)
-            elif cmd == "run" and self.last_good.exists():
+            elif cmd == "run" and self.db.kv_get("last_good_config", "all"):
                 # Jangan biarkan posisi terbuka tanpa stop loss: jalan dengan pengaturan valid terakhir,
                 # tanpa membuka posisi baru, sampai pengaturan diperbaiki.
                 log.error("%s\nMemakai pengaturan valid terakhir; pembelian baru di-pause.", e)
-                self.cfg = json.loads(self.last_good.read_text(encoding="utf-8"))
-                (Path(self.boot["data_dir"]) / "PAUSE").touch()
+                self.cfg = self.db.kv_get("last_good_config", "all")
+                self.cfg["data_dir"] = self.boot["data_dir"]
+                self.store_for(self.cfg["mode"]).set_flag("PAUSE", True)
             else:
                 raise SystemExit(str(e))
 
     def creds(self) -> dict:
         return self.svc.credentials()
+
+    def store_for(self, mode: str) -> DbStateStore:
+        return DbStateStore(self.db, mode, self.boot["data_dir"])
 
 
 class DbConfigSource:
@@ -236,7 +260,7 @@ def cmd_run(ctx, args):
 
     public = PublicClient()
     market = Market(public)
-    store = StateStore(cfg["data_dir"], cfg["mode"])
+    store = ctx.store_for(cfg["mode"])
     s = ctx.creds()
     notifier = Notifier(s["telegram_token"], s["telegram_chat_id"], cfg["telegram"]["enabled"],
                         prefix="[SIMULASI] " if cfg["mode"] == "paper" else "")
@@ -263,11 +287,10 @@ def cmd_run(ctx, args):
 
 def cmd_status(ctx, args):
     cfg = ctx.cfg
-    store = StateStore(cfg["data_dir"], cfg["mode"])
+    store = ctx.store_for(cfg["mode"])
     st = store.load()
     print(f"Mode: {cfg['mode'].upper()}")
-    flags = Path(cfg["data_dir"])
-    if (flags / "PAUSE").exists():
+    if store.flag("PAUSE"):
         print("Status: PAUSE (tidak membuka posisi baru)")
     quotes = {}
     try:
@@ -427,12 +450,8 @@ def cmd_user(ctx, args):
         print("Password diganti. Semua sesi login akun ini dikeluarkan.")
 
 
-def cmd_flag(cfg, name, create=True, msg=""):
-    f = Path(cfg["data_dir"]) / name
-    if create:
-        f.touch()
-    else:
-        f.unlink(missing_ok=True)
+def cmd_flag(ctx, name, create=True, msg=""):
+    ctx.store_for(ctx.cfg["mode"]).set_flag(name, create)
     if msg:
         print(msg)
 
@@ -489,12 +508,12 @@ def main(argv=None):
         from .supervisor import run_all
         run_all(ctx, args)
     elif args.cmd == "pause":
-        cmd_flag(cfg, "PAUSE", True, "Bot tidak akan membuka posisi baru. Posisi terbuka tetap dijaga TP/SL.")
+        cmd_flag(ctx, "PAUSE", True, "Bot tidak akan membuka posisi baru. Posisi terbuka tetap dijaga TP/SL.")
     elif args.cmd == "resume":
-        cmd_flag(cfg, "PAUSE", False, "Bot kembali boleh membuka posisi baru.")
+        cmd_flag(ctx, "PAUSE", False, "Bot kembali boleh membuka posisi baru.")
     elif args.cmd == "sellall":
-        cmd_flag(cfg, "PAUSE", True, "")
-        cmd_flag(cfg, "SELLALL", True, "Permintaan jual semua dikirim; bot yang berjalan akan memprosesnya "
+        cmd_flag(ctx, "PAUSE", True, "")
+        cmd_flag(ctx, "SELLALL", True, "Permintaan jual semua dikirim; bot yang berjalan akan memprosesnya "
                                        "dalam beberapa detik (dan terus mencoba sampai semua terjual).\n"
                                        "Pembelian baru di-pause. Jalankan `python -m bot resume` untuk melanjutkan.")
 

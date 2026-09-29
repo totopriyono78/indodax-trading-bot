@@ -76,20 +76,23 @@ Repo ini sudah berisi `railway.json` (start command `python -m bot all`, health 
 `.python-version`. `python -m bot all` menjalankan dashboard **dan** bot trading dalam satu service; bot
 dinyalakan ulang otomatis jika berhenti atau mode diganti. Railway otomatis memberi HTTPS.
 
+**Semua data disimpan di PostgreSQL** — pengaturan, akun login, API key (terenkripsi), posisi & saldo
+simulasi, jurnal transaksi, PnL harian, status pause, dan log. Karena itu redeploy (mis. saat menambah
+fitur) **tidak menghapus apa pun** dan tidak perlu Volume.
+
 1. **New Project → Deploy from GitHub repo** → pilih repo ini.
-2. **Tambahkan Volume** ke service (klik kanan service → *Attach Volume*), mount path **`/app/data`**.
-   Tanpa volume, posisi, jurnal transaksi (dan database SQLite + API key) **hilang setiap redeploy** —
-   dashboard akan menampilkan peringatan.
-3. (Disarankan) **Add → Database → PostgreSQL**, lalu di variabel service bot isi
-   `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Tanpa ini dipakai SQLite di volume (juga boleh).
-4. **Variables** service bot:
-   - `BOT_MASTER_KEY` = kunci enkripsi. Buat sekali di PC:
+2. **+ Create → Database → PostgreSQL** di project yang sama.
+3. **Variables** pada service bot:
+   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
+   - `BOT_MASTER_KEY` = kunci enkripsi API key. Buat sekali di PC:
      `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
-     dan **simpan cadangannya**. (Jika dikosongkan, kunci dibuat di volume `data/.master_key`.)
+     dan **simpan cadangannya** (jika hilang, API key harus dimasukkan ulang).
    - `ADMIN_USERNAME` dan `ADMIN_PASSWORD` (min. 10 karakter) untuk akun login pertama —
-     hapus `ADMIN_PASSWORD` setelah berhasil login. (Alternatif: kode setup yang tercetak di *Deploy Logs*.)
-   - `TZ=Asia/Jakarta` (opsional).
-5. **Settings → Networking → Generate Domain**, buka domainnya, login, lalu atur pair, stop loss & API key.
+     hapus `ADMIN_PASSWORD` setelah berhasil login. (Alternatif: kode setup di *Deploy Logs*.)
+4. **Settings → Networking → Generate Domain**, buka domainnya, login, lalu atur pair, stop loss & API key.
+
+Tanpa PostgreSQL, bot memakai SQLite di disk container yang **hilang saat redeploy**; dashboard akan
+menampilkan peringatan. (Alternatifnya: pasang Volume di `/app/data`.)
 
 > ⚠️ **IP whitelist Indodax.** Izin *Trade* di TAPI v2 **wajib** memakai IP whitelist. IP keluar Railway
 > berubah-ubah, kecuali Anda memakai **Static Outbound IPs** (khusus **Railway Pro**: Settings → Networking →
@@ -166,7 +169,7 @@ journalctl -u indodax-bot -f                       # log langsung
 ```
 
 Setelah yakin, pindah ke **LIVE** di dashboard (Pengaturan → Mode & sistem) dengan modal kecil.
-State simulasi dan live disimpan terpisah (`data/state_paper.json` vs `data/state_live.json`).
+Data simulasi dan live disimpan terpisah di database, jadi keduanya tidak saling tercampur.
 
 ### Perintah terminal
 
@@ -179,23 +182,30 @@ State simulasi dan live disimpan terpisah (`data/state_paper.json` vs `data/stat
 | `python -m bot pause` / `resume` | Stop / lanjutkan membuka posisi baru |
 | `python -m bot sellall` | Jual semua posisi bot dan pause pembelian baru |
 | `sudo systemctl stop indodax-bot` | Matikan bot (posisi **tidak** dijual otomatis) |
-| `data/trades_live.csv` | Jurnal transaksi (bisa dibuka di Excel) |
 
 ### Cadangan (backup)
 
-Yang perlu dicadangkan: `.env` (terutama `BOT_MASTER_KEY`), `data/bot.db` (atau database PostgreSQL),
-dan folder `data/` (posisi & jurnal transaksi).
+Yang perlu dicadangkan: `BOT_MASTER_KEY` (dari `.env` atau Variables Railway) dan database
+(`data/bot.db` untuk SQLite, atau `pg_dump` / fitur backup PostgreSQL di Railway).
 
 ---
 
 ## 5. Tempat data disimpan
 
-| Data | Lokasi |
+Semua data ada di **database** (`DATABASE_URL`: PostgreSQL, atau SQLite `data/bot.db` jika kosong):
+
+| Data | Tabel |
 |---|---|
-| Pengaturan, pair & stop loss per pair, akun login, API key (terenkripsi), riwayat perubahan | Database (`data/bot.db` atau PostgreSQL) |
-| Posisi terbuka, PnL harian | `data/state_<mode>.json` |
-| Jurnal transaksi | `data/trades_<mode>.csv` |
-| Log | `data/bot.log` |
+| Pengaturan, pair & stop loss per pair | `settings` |
+| Akun login, sesi, riwayat perubahan | `users`, `sessions`, `audit` |
+| API key Indodax & Telegram (terenkripsi dengan `BOT_MASTER_KEY`) | `secrets` |
+| Posisi terbuka, saldo simulasi, PnL harian, status untuk dashboard | `bot_kv` |
+| Jurnal transaksi beli/jual | `trades` |
+| Log bot & dashboard (3.000 baris terakhir) | `logs` |
+| Status pause / jual semua | `meta` |
+
+Data dari versi lama (`data/state_*.json`, `data/trades_*.csv`) dipindahkan otomatis ke database saat
+pertama kali dijalankan. File log `data/*.log` tetap ditulis sebagai cadangan lokal.
 
 ---
 
