@@ -415,3 +415,36 @@ def test_master_key_file_fallback(tmp_path, monkeypatch):
     monkeypatch.delenv("BOT_MASTER_KEY")
     load_master_key_file(str(tmp_path), create=False)          # proses bot membaca kunci yang sama
     assert os.environ["BOT_MASTER_KEY"] == k
+
+
+def test_chart_endpoint_candles_trades_position(server):
+    import bot.web as W
+    from bot.state import Position, StateStore, fmt_time
+    from .fakes import FakePublic
+    ctx, url, _ = server
+    ctx.db.add_user("admin", "password-kuat-1")
+    now = time.time()
+    closes = [100 + i * 0.1 for i in range(200)]
+    fp = FakePublic({"PEPEIDR": closes, "BTCIDR": closes}, now=now)
+    # ganti sumber candle pada handler yang sedang berjalan
+    import gc
+    for obj in gc.get_objects():
+        if isinstance(obj, W.ChartCache):
+            obj.market.public = fp
+            obj.cache.clear()
+    store = StateStore(ctx.boot["data_dir"], "paper")
+    store.log_trade(pair="pepeidr", side="BUY", qty=10, price=110, idr=100000, fee_idr=300, reason="tren naik")
+    store.log_trade(pair="btcidr", side="BUY", qty=1, price=105, idr=100000)
+    st = store.load()
+    st.positions["pepeidr"] = Position("pepeidr", 10, 110, 100000, now - 600, 111, "paper")
+    store.save(st)
+    store.write_status({"ts": now, "pairs": {"pepeidr": {"last": 119.5, "bid": 119.4}},
+                        "levels": {"pepeidr": {"stop": 107.25, "stop_reason": "stop_loss", "take_profit": 114.4}}})
+    s = _login(url)
+    d = s.get(url + "/api/chart?pair=pepeidr&period=1d").json()
+    assert len(d["candles"]) >= 90 and d["candles"][-1][4] == closes[-1]
+    assert [t["side"] for t in d["trades"]] == ["BUY"] and d["trades"][0]["price"] == 110   # hanya transaksi pair ini
+    assert d["position"]["entry"] == 110 and d["position"]["stop"] == 107.25 and d["last"] == 119.5
+    assert s.get(url + "/api/chart?pair=../../etc&period=1d").status_code == 400
+    assert s.get(url + "/api/chart?pair=pepeidr&period=5y").status_code == 400
+    assert rq.get(url + "/api/chart?pair=pepeidr&period=1d").status_code == 401

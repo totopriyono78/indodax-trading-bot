@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from datetime import datetime
@@ -212,6 +213,80 @@ class LoginGuard:
             self.fails.pop(ip, None)
 
 
+CHART_PERIODS = {            # periode -> (timeframe candle, jumlah hari)
+    "1d": ("15", 1),
+    "7d": ("60", 7),
+    "30d": ("240", 30),
+    "90d": ("1D", 90),
+}
+
+
+def _wib_to_ts(s: str) -> float:
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=WIB).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+class ChartCache:
+    """Candle harga dari Indodax (di-cache 60 detik per pair & periode)."""
+
+    def __init__(self, public):
+        from .market import Market
+        self.market = Market(public)
+        self.cache = {}
+        self.lock = threading.Lock()
+
+    def candles(self, pair: str, period: str):
+        tf, days = CHART_PERIODS[period]
+        key = (pair, period)
+        with self.lock:
+            hit = self.cache.get(key)
+            if hit and time.time() - hit[0] < 60:
+                return hit[1]
+        info = self.market.info(pair)
+        end = int(time.time())
+        rows = self.market.candles_range(info.symbol, tf, end - days * 86400, end, closed_only=False)
+        data = [[c.time, c.open, c.high, c.low, c.close] for c in rows]
+        with self.lock:
+            self.cache[key] = (time.time(), data)
+        return data
+
+
+def build_chart(cfg: dict, charts: ChartCache, pair: str, period: str) -> dict:
+    if period not in CHART_PERIODS:
+        raise ValueError("periode tidak dikenal")
+    if not re.fullmatch(r"[a-z0-9]{1,20}idr", pair or ""):
+        raise ValueError("pair tidak valid")
+    candles = charts.candles(pair, period)
+    tf, days = CHART_PERIODS[period]
+    start = (candles[0][0] if candles else time.time() - days * 86400)
+    store = StateStore(cfg["data_dir"], cfg["mode"])
+    trades = []
+    for t in store.read_trades():
+        if t.get("pair") != pair:
+            continue
+        ts = _wib_to_ts(t.get("waktu_wib", ""))
+        if ts < start:
+            continue
+        trades.append({"t": ts, "side": t.get("sisi"), "price": _f(t.get("harga")), "qty": _f(t.get("qty")),
+                       "idr": _f(t.get("idr")), "pnl": _f(t.get("pnl_idr"), None) if t.get("pnl_idr") else None,
+                       "pnl_pct": _f(t.get("pnl_pct"), None) if t.get("pnl_pct") else None,
+                       "reason": t.get("alasan", "")})
+    st = store.load()
+    status = store.read_status() or {}
+    q = (status.get("pairs") or {}).get(pair, {})
+    pos = st.positions.get(pair)
+    position = None
+    if pos:
+        lv = (status.get("levels") or {}).get(pair, {})
+        position = {"entry": pos.entry_price, "qty": pos.qty, "opened_at": pos.opened_at, "cost": pos.cost_idr,
+                    "stop": lv.get("stop"), "stop_reason": lv.get("stop_reason"), "take_profit": lv.get("take_profit")}
+    last = q.get("last") or (candles[-1][4] if candles else None)
+    return {"pair": pair, "period": period, "timeframe": tf, "candles": candles, "trades": trades,
+            "position": position, "last": last, "bid": q.get("bid"), "updated": status.get("ts")}
+
+
 class MarketCache:
     def __init__(self):
         self.public = PublicClient()
@@ -250,6 +325,7 @@ def make_handler(ctx, setup_token: dict):
     svc, db = ctx.svc, ctx.db
     guard = LoginGuard()
     market = MarketCache()
+    charts = ChartCache(market.public)
     setup_lock = threading.Lock()
 
     def cfg_now():
@@ -381,6 +457,17 @@ def make_handler(ctx, setup_token: dict):
                     return self._json({"pairs": market.pairs()})
                 if path == "/api/audit":
                     return self._json({"items": db.recent_audit(60)})
+                if path == "/api/chart":
+                    from urllib.parse import parse_qs, urlparse
+                    qs = parse_qs(urlparse(self.path).query)
+                    pair = (qs.get("pair") or [""])[0].lower()
+                    period = (qs.get("period") or ["1d"])[0]
+                    try:
+                        return self._json(build_chart(cfg_now(), charts, pair, period))
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
+                    except KeyError as e:
+                        return self._json({"error": str(e).strip("'\"")}, 404)
             except Exception as e:
                 log.exception("GET %s gagal", path)
                 return self._json({"error": str(e)}, 500)

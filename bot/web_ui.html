@@ -39,6 +39,15 @@
   </div>
 
   <div class="card section">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <h2 style="margin:0">Grafik harga per pair</h2>
+      <div class="tabs" id="periods" style="margin:0"></div>
+    </div>
+    <div class="legend" id="pc-legend"></div>
+    <div class="pc-grid" id="pair-charts"><div class="muted">Memuat grafik…</div></div>
+  </div>
+
+  <div class="card section">
     <h2>Posisi terbuka</h2>
     <div class="tbl" id="positions"></div>
   </div>
@@ -336,6 +345,184 @@ function drawDaily(days) {
   hit.addEventListener("mouseleave", () => hideTip(el));
 }
 
+/* ---------- grafik harga per pair ---------- */
+const PERIODS = [["1d", "1 hari"], ["7d", "7 hari"], ["30d", "30 hari"], ["90d", "90 hari"]];
+let PERIOD = "1d";
+try { PERIOD = localStorage.getItem("pc-period") || "1d"; } catch (e) {}
+const PC = {};           // pair -> data grafik
+let PC_PAIRS = [];
+let PC_LOADED_AT = 0;
+
+function shortPx(v) {
+  const a = Math.abs(v);
+  const f3 = (x) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: 3 }).format(x);
+  if (a >= 1e9) return f3(v / 1e9) + " M";
+  if (a >= 1e6) return nf2.format(v / 1e6).replace(/,00$/, "") + " jt";
+  if (a >= 1e4) return nf0.format(v);
+  return px(v);
+}
+function tfmt(ts, period) {
+  const d = new Date(ts * 1000);
+  const o = period === "1d" ? { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" } : { day: "2-digit", month: "short" };
+  return d.toLocaleString("id-ID", { timeZone: "Asia/Jakarta", ...o });
+}
+function tfull(ts) {
+  return new Date(ts * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderPeriods() {
+  $("periods").innerHTML = PERIODS.map(([k, l]) => `<button class="${k === PERIOD ? "active" : ""}" data-p="${k}">${l}</button>`).join("");
+  $("periods").querySelectorAll("button").forEach((b) => (b.onclick = () => {
+    PERIOD = b.dataset.p; try { localStorage.setItem("pc-period", PERIOD); } catch (e) {}
+    renderPeriods(); loadPairCharts(true);
+  }));
+  $("pc-legend").innerHTML = `
+    <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--series-1)" stroke-width="2"/></svg>harga</span>
+    <span><svg width="12" height="12"><path d="M6 1 L11 10 L1 10 Z" fill="var(--buy)" stroke="var(--surface)" stroke-width="1"/></svg>beli oleh bot</span>
+    <span><svg width="12" height="12"><path d="M6 11 L11 2 L1 2 Z" fill="var(--sell)" stroke="var(--surface)" stroke-width="1"/></svg>jual oleh bot</span>
+    <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--text-2)" stroke-width="1.5" stroke-dasharray="4 3"/></svg>harga beli posisi</span>
+    <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--critical)" stroke-width="1.5" stroke-dasharray="4 3"/></svg>stop loss</span>
+    <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--good)" stroke-width="1.5" stroke-dasharray="4 3"/></svg>take profit</span>
+    <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--text)" stroke-width="1"/></svg>harga terkini</span>`;
+}
+
+async function loadPairCharts(force) {
+  if (!DATA) return;
+  const pairs = [...new Set([...DATA.positions.map((p) => p.pair), ...DATA.signals.map((g) => g.pair)])];
+  const changed = pairs.join() !== PC_PAIRS.join();
+  if (!force && !changed && Date.now() - PC_LOADED_AT < 60000) { drawAllPairCharts(); return; }
+  PC_PAIRS = pairs; PC_LOADED_AT = Date.now();
+  const grid = $("pair-charts");
+  if (!pairs.length) { grid.innerHTML = `<div class="muted">Belum ada pair aktif.</div>`; return; }
+  grid.innerHTML = pairs.map((p) => `<div class="pc-card" id="pc-${esc(p)}"><div class="pc-head"><b>${esc(p.toUpperCase())}</b><span class="muted">memuat…</span></div><div class="pc-chart"></div></div>`).join("");
+  await Promise.all(pairs.map(async (p) => {
+    try { PC[p] = await App.api("GET", `/api/chart?pair=${encodeURIComponent(p)}&period=${PERIOD}`); }
+    catch (e) { PC[p] = { error: e.message }; }
+  }));
+  drawAllPairCharts();
+}
+
+function drawAllPairCharts() {
+  for (const p of PC_PAIRS) {
+    const el = document.getElementById("pc-" + p);
+    if (el && PC[p]) drawPairChart(el, PC[p]);
+  }
+}
+
+function drawPairChart(card, d) {
+  const head = card.querySelector(".pc-head"), el = card.querySelector(".pc-chart");
+  if (d.error) { head.innerHTML = `<b>${esc(card.id.slice(3).toUpperCase())}</b><span class="neg">${esc(d.error)}</span>`; el.innerHTML = ""; return; }
+  const c = d.candles || [];
+  // harga terkini: pakai harga dari bot jika ada (lebih baru dari candle)
+  const now = d.last || (c.length ? c[c.length - 1][4] : null);
+  const first = c.length ? c[0][1] : null;
+  const chg = first && now ? (now / first - 1) * 100 : null;
+  const pos = d.position;
+  let posTxt = "";
+  if (pos && now) {
+    const pnl = (now / pos.entry - 1) * 100;
+    posTxt = `<span class="tag ${pnl >= 0 ? "buy" : "exit"}">posisi ${pnl >= 0 ? "+" : "−"}${nf2.format(Math.abs(pnl))}%</span>`;
+  }
+  head.innerHTML = `<b>${esc(d.pair.toUpperCase())}</b>
+    <span class="pc-price">${px(now)}</span>
+    <span class="${cls(chg)}">${chg === null ? "" : arrow(chg) + pct(chg)}</span>${posTxt}`;
+  if (c.length < 2) { el.innerHTML = `<div class="empty">Data harga belum tersedia.</div>`; return; }
+
+  const W = el.clientWidth || 360, H = el.clientHeight || 210, M = { l: 8, r: 78, t: 10, b: 20 };
+  const vals = [];
+  c.forEach((k) => vals.push(k[2], k[3]));
+  const lines = [];
+  if (pos) {
+    lines.push({ v: pos.entry, col: "var(--text-2)", dash: "4 3", label: "beli " + shortPx(pos.entry), w: 1.5 });
+    if (pos.stop) lines.push({ v: pos.stop, col: "var(--critical)", dash: "4 3", label: (pos.stop_reason === "trailing_stop" ? "trail " : "SL ") + shortPx(pos.stop), w: 1.5 });
+    if (pos.take_profit) lines.push({ v: pos.take_profit, col: "var(--good)", dash: "4 3", label: "TP " + shortPx(pos.take_profit), w: 1.5 });
+  }
+  if (now) lines.push({ v: now, col: "var(--text)", dash: "", label: shortPx(now), w: 1, current: true });
+  lines.forEach((l) => vals.push(l.v));
+  (d.trades || []).forEach((t) => vals.push(t.price));
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = (hi - lo) * 0.08 || hi * 0.01;
+  lo -= pad; hi += pad;
+  const t0 = c[0][0], t1 = Math.max(c[c.length - 1][0], ...(d.trades || []).map((t) => t.t));
+  const xOf = (t) => M.l + ((t - t0) / Math.max(1, t1 - t0)) * (W - M.l - M.r);
+  const yOf = (v) => M.t + (1 - (v - lo) / (hi - lo)) * (H - M.t - M.b);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Grafik harga ${esc(d.pair)} ${PERIOD}">`;
+  // grid & sumbu harga (kanan)
+  const ticks = niceTicks(lo, hi, 4).filter((v) => v >= lo && v <= hi);
+  for (const v of ticks) {
+    const y = yOf(v);
+    svg += `<line x1="${M.l}" x2="${W - M.r}" y1="${y}" y2="${y}" stroke="var(--grid)"/>`;
+  }
+  svg += `<text x="${M.l}" y="${H - 5}" font-size="10.5" fill="var(--muted)">${esc(tfmt(t0, PERIOD))}</text>`;
+  svg += `<text x="${W - M.r}" y="${H - 5}" font-size="10.5" fill="var(--muted)" text-anchor="end">${esc(tfmt(c[c.length - 1][0], PERIOD))}</text>`;
+  // garis harga (close)
+  let path = "";
+  c.forEach((k, i) => (path += (i ? " L" : "M") + xOf(k[0]).toFixed(1) + "," + yOf(k[4]).toFixed(1)));
+  svg += `<path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  // garis referensi: harga beli, SL, TP, harga terkini
+  for (const l of lines) {
+    const y = yOf(l.v);
+    svg += `<line x1="${M.l}" x2="${W - M.r}" y1="${y}" y2="${y}" stroke="${l.col}" stroke-width="${l.w}" ${l.dash ? `stroke-dasharray="${l.dash}"` : ""} opacity="${l.current ? 0.55 : 0.9}"/>`;
+  }
+  // label di margin kanan, digeser agar tidak bertumpuk
+  const labs = lines.map((l) => ({ ...l, y: yOf(l.v) })).sort((a, b) => a.y - b.y);
+  for (let i = 1; i < labs.length; i++) {
+    const gap = labs[i].current || labs[i - 1].current ? 17 : 13;
+    if (labs[i].y - labs[i - 1].y < gap) labs[i].y = labs[i - 1].y + gap;
+  }
+  // jika label terdorong keluar bawah, geser semua ke atas
+  const over = labs.length ? labs[labs.length - 1].y - (H - M.b) : 0;
+  if (over > 0) labs.forEach((l) => (l.y -= over));
+  for (const l of labs) {
+    const y = l.y;
+    if (l.current) {
+      svg += `<rect x="${W - M.r + 3}" y="${y - 8}" width="${M.r - 4}" height="16" rx="4" fill="var(--text)"/>`;
+      svg += `<text x="${W - M.r + 7}" y="${y + 4}" font-size="10.5" font-weight="700" fill="var(--surface)">${esc(l.label)}</text>`;
+    } else {
+      svg += `<text x="${W - M.r + 6}" y="${y + 4}" font-size="10.5" fill="var(--text-2)">${esc(l.label)}</text>`;
+    }
+  }
+  // penanda transaksi bot
+  (d.trades || []).forEach((t, i) => {
+    const x = xOf(t.t), y = yOf(t.price);
+    const shape = t.side === "BUY"
+      ? `M${x} ${y + 3} l6 11 h-12 Z`         // ▲ di bawah harga beli
+      : `M${x} ${y - 3} l6 -11 h-12 Z`;       // ▼ di atas harga jual
+    svg += `<path d="${shape}" fill="${t.side === "BUY" ? "var(--buy)" : "var(--sell)"}" stroke="var(--surface)" stroke-width="1.5"/>`;
+  });
+  svg += `<line class="cx" y1="${M.t}" y2="${H - M.b}" stroke="var(--axis)" visibility="hidden"/>`;
+  svg += `<circle class="cp" r="4" fill="var(--series-1)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>`;
+  svg += `<rect class="hit" x="${M.l}" y="0" width="${W - M.l - M.r}" height="${H}" fill="transparent"/></svg>`;
+  el.innerHTML = svg;
+
+  const hit = el.querySelector(".hit"), cx = el.querySelector(".cx"), cp = el.querySelector(".cp");
+  const move = (ev) => {
+    const r = el.getBoundingClientRect();
+    const x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+    // transaksi terdekat (radius 10px) diutamakan
+    let best = null, bd = 11;
+    for (const t of d.trades || []) { const dx = Math.abs(xOf(t.t) - x); if (dx < bd) { bd = dx; best = t; } }
+    if (best) {
+      const X = xOf(best.t), Y = yOf(best.price);
+      cx.setAttribute("x1", X); cx.setAttribute("x2", X); cx.setAttribute("visibility", "visible");
+      cp.setAttribute("visibility", "hidden");
+      const pl = best.pnl === null ? "" : `<br>PnL <b class="${cls(best.pnl)}">${rp(best.pnl, true)}</b> (${pct(best.pnl_pct)})`;
+      tipAt(el, `<b>${best.side === "BUY" ? "▲ BELI" : "▼ JUAL"}</b> · ${esc(tfull(best.t))}<br>harga <b>${px(best.price)}</b> · ${rp(best.idr)}${pl}${best.side === "SELL" ? "<br>" + esc(REASONS[best.reason] || best.reason) : ""}`, X, Y);
+      return;
+    }
+    const tx = t0 + ((x - M.l) / (W - M.l - M.r)) * (t1 - t0);
+    let i = 0, bi = Infinity;
+    c.forEach((k, j) => { const dd = Math.abs(k[0] - tx); if (dd < bi) { bi = dd; i = j; } });
+    const k = c[i], X = xOf(k[0]), Y = yOf(k[4]);
+    cx.setAttribute("x1", X); cx.setAttribute("x2", X); cx.setAttribute("visibility", "visible");
+    cp.setAttribute("cx", X); cp.setAttribute("cy", Y); cp.setAttribute("visibility", "visible");
+    tipAt(el, `${esc(tfull(k[0]))}<br>tutup <b>${px(k[4])}</b><br><span class="muted">tinggi ${px(k[2])} · rendah ${px(k[3])}</span>`, X, Y);
+  };
+  hit.addEventListener("mousemove", move); hit.addEventListener("touchstart", move, { passive: true });
+  hit.addEventListener("mouseleave", () => { cx.setAttribute("visibility", "hidden"); cp.setAttribute("visibility", "hidden"); hideTip(el); });
+}
+
 /* ---------- kontrol ---------- */
 async function act(action, confirmText) {
   if (confirmText && !window.confirm(confirmText)) return;
@@ -360,9 +547,10 @@ async function loadLog() {
 $("logbox").addEventListener("toggle", () => { if ($("logbox").open) loadLog(); });
 
 App.nav("dash").catch(() => {});
-let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => DATA && render(DATA), 150); });
-load();
-setInterval(() => { load(); if ($("logbox").open) loadLog(); }, 15000);
+let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { if (DATA) render(DATA); drawAllPairCharts(); }, 150); });
+renderPeriods();
+load().then(() => loadPairCharts(true));
+setInterval(() => { load().then(() => loadPairCharts(false)); if ($("logbox").open) loadLog(); }, 15000);
 </script>
 </body>
 </html>

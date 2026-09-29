@@ -4,7 +4,8 @@
   --bg: #f4f4f2; --surface: #fcfcfb; --surface-2: #f0efec; --border: #e2e1dc;
   --text: #0b0b0b; --text-2: #52514e; --muted: #7a7974;
   --grid: #e8e7e3; --axis: #b9b8b2;
-  --series-1: #2a78d6;           /* biru: garis PnL kumulatif, batang positif */
+  --series-1: #2a78d6;           /* biru: garis harga & PnL kumulatif, batang positif */
+  --buy: #1baf7a; --sell: #eb6834;  /* penanda beli / jual di grafik pair */
   --neg: #e34948;                /* merah: batang negatif (pasangan divergen) */
   --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
   --good-text: #006300; --critical-text: #b42828;
@@ -16,7 +17,7 @@
     --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #2e2e2b;
     --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e86;
     --grid: #2a2a27; --axis: #55544f;
-    --series-1: #3987e5; --neg: #e66767;
+    --series-1: #3987e5; --neg: #e66767; --buy: #199e70; --sell: #d95926;
     --good-text: #4fcf4f; --critical-text: #f08080;
     --btn: #f4f4f2; --btn-text: #111;
   }
@@ -26,7 +27,7 @@
   --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #2e2e2b;
   --text: #ffffff; --text-2: #c3c2b7; --muted: #8f8e86;
   --grid: #2a2a27; --axis: #55544f;
-  --series-1: #3987e5; --neg: #e66767;
+  --series-1: #3987e5; --neg: #e66767; --buy: #199e70; --sell: #d95926;
   --good-text: #4fcf4f; --critical-text: #f08080;
   --btn: #f4f4f2; --btn-text: #111;
 }
@@ -112,3 +113,14 @@ input.small::placeholder { color: var(--muted); }
 .ok-text { color: var(--good-text); }
 .center-card { max-width: 400px; margin: 8vh auto 0; }
 .switch { width: 18px; height: 18px; }
+
+/* ---------- grafik harga per pair ---------- */
+.pc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.pc-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 10px 4px; min-width: 0; background: var(--bg); }
+.pc-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.pc-price { font-weight: 650; }
+.pc-chart { position: relative; height: 210px; }
+.pc-chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; margin: 6px 0 10px; }
+.legend span { display: inline-flex; gap: 5px; align-items: center; }
+@media (max-width: 420px) { .pc-grid { grid-template-columns: 1fr; } }
