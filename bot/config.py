@@ -53,6 +53,18 @@ DEFAULTS = {
     "telegram": {
         "enabled": False,
     },
+    "optimizer": {
+        "enabled": True,            # evaluasi berkala di background
+        "mode": "auto",             # "suggest" = hanya usulan, "auto" = terapkan otomatis
+        "apply_in_live": False,     # di mode LIVE hanya usulan, kecuali ini diaktifkan
+        "interval_hours": 24,
+        "min_trades": 20,           # minimal transaksi selesai sebelum mengubah pengaturan
+        "lookback_days": 30,        # data candle untuk uji ulang (backtest) usulan
+        "max_step_pct": 25,         # perubahan maksimum per langkah (relatif terhadap nilai sekarang)
+        "rollback": True,           # kembalikan otomatis jika hasil sesudah perubahan memburuk
+        "eval_trades": 15,          # jumlah transaksi sesudah perubahan sebelum dinilai
+        "allow_disable_pairs": False,
+    },
     "dashboard": {
         "host": "127.0.0.1",
         "port": 8080,
@@ -130,6 +142,15 @@ def validate(cfg: dict) -> None:
         errs.append("risk.max_total_exposure_idr harus >= idr_per_trade")
     if cfg["candles_lookback"] < s["ema_trend"] + 20:
         errs.append("candles_lookback harus minimal ema_trend + 20")
+    o = cfg.get("optimizer") or {}
+    if o:
+        if o.get("mode") not in ("suggest", "auto"):
+            errs.append("optimizer.mode harus 'suggest' atau 'auto'")
+        for k, lo, hi in (("interval_hours", 1, 168), ("min_trades", 5, 1000), ("lookback_days", 7, 90),
+                          ("max_step_pct", 5, 100), ("eval_trades", 5, 500)):
+            v = o.get(k)
+            if not isinstance(v, (int, float)) or not lo <= v <= hi:
+                errs.append(f"optimizer.{k} harus antara {lo} dan {hi}")
     if errs:
         raise ConfigError("Konfigurasi tidak valid:\n - " + "\n - ".join(errs))
 

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimasi — Bot Indodax</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js"></script>
+<style>
+.expl { font-size: 12.5px; color: var(--text-2); margin: 4px 0 8px; }
+.runs { display: grid; gap: 10px; }
+.run { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); }
+.run-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.run-head .when { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.run-head .spacer { flex: 1; }
+.st { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); }
+.st.applied { color: var(--good-text); border-color: var(--good); }
+.st.proposed { color: var(--series-1); border-color: var(--series-1); }
+.st.rolled_back, .st.error { color: var(--critical-text); border-color: var(--critical); }
+.run .sum { margin: 6px 0 2px; font-size: 13.5px; }
+.run .notes { font-size: 12.5px; color: var(--text-2); margin: 4px 0 0; padding-left: 18px; }
+.prop { margin-top: 8px; font-size: 13px; }
+.prop table { width: 100%; max-width: 440px; }
+.ev { font-size: 12px; color: var(--muted); }
+.run .actions { margin-top: 8px; }
+.status-line { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.status-line b { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="topnav" id="topnav"></nav>
+  <header>
+    <div>
+      <h1>Optimasi strategi otomatis</h1>
+      <div class="muted" style="font-size:13px" id="sub">Memuat…</div>
+    </div>
+    <div class="controls"><button class="primary" id="run-now">Jalankan sekarang</button></div>
+  </header>
+
+  <div class="card section">
+    <div class="status-line" id="status"></div>
+    <div class="note" style="margin-top:10px">Cara kerja: secara berkala optimizer membaca jurnal transaksi bot, lalu menguji
+      kombinasi stop loss, take profit dan trailing stop di sekitar nilai sekarang pada data harga beberapa minggu terakhir
+      (70% data untuk memilih, 30% data terpisah untuk menguji ulang). Perubahan hanya diusulkan jika lebih baik di
+      <b>kedua</b> bagian data, dibatasi per langkah, dan dievaluasi lagi setelah cukup transaksi — jika hasilnya memburuk,
+      nilai lama dipulihkan otomatis. Hasil masa lalu tidak menjamin profit ke depan.</div>
+  </div>
+
+  <div class="card section">
+    <h2>Pengaturan optimizer</h2>
+    <div class="form-grid" id="form">
+      <label class="check"><input type="checkbox" id="o-enabled"> Aktifkan evaluasi berkala</label>
+      <div><label for="o-mode">Cara menerapkan</label>
+        <select id="o-mode"><option value="auto">Otomatis (langsung diterapkan)</option><option value="suggest">Usulan saja (perlu persetujuan)</option></select></div>
+      <label class="check"><input type="checkbox" id="o-live"> Boleh menerapkan otomatis saat mode LIVE</label>
+      <label class="check"><input type="checkbox" id="o-rollback"> Rollback otomatis jika hasil memburuk</label>
+      <label class="check"><input type="checkbox" id="o-disable"> Boleh mengusulkan menonaktifkan pair yang terus rugi</label>
+      <div><label for="o-interval">Jalankan tiap (jam)</label><input id="o-interval" inputmode="decimal"><div class="help">1–168</div></div>
+      <div><label for="o-min">Minimal transaksi selesai</label><input id="o-min" inputmode="numeric"><div class="help">dalam periode data; 5–1000</div></div>
+      <div><label for="o-lookback">Periode data (hari)</label><input id="o-lookback" inputmode="numeric"><div class="help">7–90</div></div>
+      <div><label for="o-step">Perubahan maks. per langkah (%)</label><input id="o-step" inputmode="decimal"><div class="help">relatif dari nilai sekarang; 5–100</div></div>
+      <div><label for="o-eval">Transaksi untuk evaluasi</label><input id="o-eval" inputmode="numeric"><div class="help">sebelum perubahan dinilai berhasil/gagal; 5–500</div></div>
+    </div>
+    <div class="actions"><button class="primary" id="save">Simpan pengaturan</button><span class="err" id="form-err"></span></div>
+  </div>
+
+  <div class="card section">
+    <h2>Riwayat optimasi</h2>
+    <div class="runs" id="runs"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = App.esc;
+const nf1 = new Intl.NumberFormat("id-ID", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const nf2 = new Intl.NumberFormat("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const nf0 = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 });
+const sgn = (x, f = nf1) => x == null || isNaN(x) ? "—" : (x > 0 ? "+" : x < 0 ? "−" : "") + f.format(Math.abs(x));
+const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
+const when = (ts) => ts ? new Date(ts * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium", timeStyle: "short" }) + " WIB" : "—";
+const LABEL = { stop_loss_pct: "Stop loss", take_profit_pct: "Take profit", trailing_stop_pct: "Trailing stop", trailing_activation_pct: "Aktivasi trailing" };
+const STATUS = { applied: "diterapkan", proposed: "usulan", no_change: "tidak ada perubahan", skipped: "dilewati",
+  rejected: "ditolak", rolled_back: "dikembalikan", superseded: "digantikan", error: "gagal" };
+const TRIG = { schedule: "terjadwal", manual: "manual" };
+const pv = (v) => !v ? "mati" : nf1.format(v) + "%";
+let D = null, poll = null;
+
+function renderStatus(d) {
+  const o = d.settings;
+  $("sub").textContent = `Mode trading: ${d.trading_mode === "live" ? "LIVE" : "Simulasi"} · ` +
+    (o.enabled ? (o.mode === "auto" ? (d.trading_mode === "live" && !o.apply_in_live ? "otomatis (di LIVE hanya usulan)" : "diterapkan otomatis") : "hanya usulan") : "nonaktif");
+  $("status").innerHTML = `<span>Terakhir jalan: <b>${when(d.last_run)}</b></span>
+    <span>Berikutnya: <b>${o.enabled ? when(d.next_run) : "—"}</b></span>
+    <span>Status: <b>${d.running ? "sedang berjalan…" : "siap"}</b></span>`;
+  $("run-now").disabled = d.running;
+}
+function fillForm(o) {
+  $("o-enabled").checked = o.enabled; $("o-mode").value = o.mode; $("o-live").checked = o.apply_in_live;
+  $("o-rollback").checked = o.rollback; $("o-disable").checked = o.allow_disable_pairs;
+  $("o-interval").value = App.fmtNum(o.interval_hours); $("o-min").value = o.min_trades;
+  $("o-lookback").value = o.lookback_days; $("o-step").value = App.fmtNum(o.max_step_pct); $("o-eval").value = o.eval_trades;
+}
+function evidence(p) {
+  const e = p.evidence || {}, c = e.current || {}, n = e.candidate;
+  const j = e.journal || {};
+  const bt = n ? `Backtest latih ${sgn(c.train)}% → <b class="${cls(n.train - c.train)}">${sgn(n.train)}%</b>, uji ${sgn(c.test)}% → <b class="${cls(n.test - c.test)}">${sgn(n.test)}%</b> (${n.n_train}+${n.n_test} transaksi)` : `Backtest latih ${sgn(c.train)}%, uji ${sgn(c.test)}%`;
+  const jr = j.n ? ` · jurnal ${j.n} transaksi, rata-rata ${sgn(j.avg_pct, nf2)}%/trx` : "";
+  return `<div class="ev">${bt}${jr}</div>`;
+}
+function renderRun(r) {
+  const d = r.data || {};
+  const props = (d.proposals || []).map((p) => {
+    const rows = Object.entries(p.changes || {}).map(([k, ch]) => `<tr><td>${LABEL[k]}</td><td class="num">${pv(ch.old)}</td><td class="num">→ <b>${pv(ch.new)}</b></td></tr>`).join("");
+    return `<div class="prop"><b>${esc(p.pair.toUpperCase())}</b>${p.disable ? ' <span class="tag">usul nonaktif</span>' : ""}
+      ${rows ? `<table><tbody>${rows}</tbody></table>` : ""}${evidence(p)}</div>`;
+  }).join("");
+  const notes = (d.notes || []).concat(d.evaluation ? [d.evaluation.text] : [])
+    .concat(d.rollback ? [`Dikembalikan oleh ${d.rollback.by} (${d.rollback.reason}): ${(d.rollback.restored || []).join(", ") || "-"}` + ((d.rollback.skipped || []).length ? `; dilewati: ${d.rollback.skipped.join(", ")}` : "")] : []);
+  let acts = "";
+  if (r.status === "proposed") acts = `<button class="primary" data-a="apply" data-id="${r.id}">Terapkan</button><button data-a="reject" data-id="${r.id}">Tolak</button>`;
+  if (r.status === "applied") acts = `<button class="danger" data-a="rollback" data-id="${r.id}">Kembalikan ke sebelumnya</button>`;
+  const by = r.status === "applied" ? ` · oleh ${esc(d.applied_by === "optimizer" ? "optimizer (otomatis)" : d.applied_by)}` : "";
+  return `<div class="run"><div class="run-head"><b>#${r.id}</b><span class="st ${r.status}">${STATUS[r.status] || r.status}</span>
+      <span class="tag">${r.trading_mode === "live" ? "LIVE" : "Simulasi"}</span>
+      <span class="when">${when(r.ts)} · ${TRIG[d.trigger] || d.trigger || ""}${by}</span></div>
+    <div class="sum">${esc(d.summary || "")}</div>${props}
+    ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${acts ? `<div class="actions">${acts}</div>` : ""}</div>`;
+}
+function render() {
+  renderStatus(D);
+  $("runs").innerHTML = D.runs.length ? D.runs.map(renderRun).join("") : `<div class="muted">Belum pernah dijalankan.</div>`;
+  $("runs").querySelectorAll("button[data-a]").forEach((b) => (b.onclick = () => act(b.dataset.a, b.dataset.id)));
+  clearTimeout(poll);
+  if (D.running) poll = setTimeout(load, 4000);
+}
+async function act(a, id) {
+  const q = { apply: "Terapkan usulan ini ke pengaturan pair?", reject: "Tolak usulan ini?", rollback: "Kembalikan pengaturan yang diubah oleh optimasi ini ke nilai sebelumnya?" };
+  if (!confirm(q[a])) return;
+  try { const r = await App.api("POST", `/api/optimizer/runs/${id}/${a}`, {}); App.toast(r.message); D = r; render(); }
+  catch (e) { App.toast(e.message, true); }
+}
+async function load(first) {
+  try { D = await App.api("GET", "/api/optimizer"); if (first) fillForm(D.settings); render(); }
+  catch (e) { $("sub").textContent = "Gagal memuat: " + e.message; }
+}
+$("run-now").onclick = async () => {
+  try { const r = await App.api("POST", "/api/optimizer/run", {}); App.toast(r.message); setTimeout(load, 1500); }
+  catch (e) { App.toast(e.message, true); }
+};
+$("save").onclick = async () => {
+  $("form-err").textContent = "";
+  const value = { enabled: $("o-enabled").checked, mode: $("o-mode").value, apply_in_live: $("o-live").checked,
+    rollback: $("o-rollback").checked, allow_disable_pairs: $("o-disable").checked,
+    interval_hours: App.num($("o-interval").value), min_trades: App.num($("o-min").value),
+    lookback_days: App.num($("o-lookback").value), max_step_pct: App.num($("o-step").value), eval_trades: App.num($("o-eval").value) };
+  const body = { value };
+  if (value.apply_in_live && !D.settings.apply_in_live) {
+    const pw = prompt("Mengizinkan optimizer mengubah pengaturan saat LIVE (uang sungguhan). Masukkan password Anda untuk konfirmasi:");
+    if (!pw) return;
+    body.password = pw;
+  }
+  try { const r = await App.api("PUT", "/api/settings/optimizer", body); App.toast(r.message); load(true); }
+  catch (e) { $("form-err").textContent = e.message; }
+};
+App.nav("optimizer").then(() => load(true)).catch(() => {});
+</script>
+</body>
+</html>

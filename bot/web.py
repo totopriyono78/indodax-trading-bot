@@ -31,7 +31,8 @@ from .state import WIB, DbStateStore, StateStore, today_wib
 log = logging.getLogger("bot.web")
 HERE = Path(__file__).parent
 PAGES = {"/": "web_ui.html", "/index.html": "web_ui.html", "/settings": "settings.html",
-         "/login": "login.html", "/setup": "login.html", "/analysis": "analysis.html"}
+         "/login": "login.html", "/setup": "login.html", "/analysis": "analysis.html",
+         "/optimizer": "optimizer.html"}
 STATIC = {"/static/app.css": ("static/app.css", "text/css; charset=utf-8"),
           "/static/app.js": ("static/app.js", "application/javascript; charset=utf-8")}
 
@@ -322,12 +323,31 @@ def _num(v):
     return v
 
 
-def make_handler(ctx, setup_token: dict):
+def make_optimizer(ctx, market=None):
+    """Optimizer untuk dashboard; notifikasi Telegram memakai kredensial terbaru dari database."""
+    from .market import Market
+    from .notifier import Notifier
+    from .optimizer import Optimizer
+    svc, db = ctx.svc, ctx.db
+
+    def notify(text):
+        try:
+            cfg, c = svc.load(), svc.credentials()
+            Notifier(c["telegram_token"], c["telegram_chat_id"], cfg["telegram"].get("enabled"),
+                     prefix="[SIMULASI] " if cfg["mode"] == "paper" else "").send(text)
+        except Exception as e:
+            log.warning("Notifikasi optimizer gagal: %s", e)
+
+    return Optimizer(db, svc, market or Market(PublicClient()), lambda m: DbStateStore(db, m), notify)
+
+
+def make_handler(ctx, setup_token: dict, optimizer=None):
     svc, db = ctx.svc, ctx.db
     guard = LoginGuard()
     market = MarketCache()
     charts = ChartCache(market.public)
     setup_lock = threading.Lock()
+    opt = optimizer or make_optimizer(ctx, charts.market)
 
     def cfg_now():
         return svc.load()
@@ -472,11 +492,14 @@ def make_handler(ctx, setup_token: dict):
                     if mode not in ("paper", "live") or period not in ("all", "7d", "30d", "90d"):
                         return self._json({"error": "parameter tidak valid"}, 400)
                     last_change = next((a["ts"] for a in db.recent_audit(500)
-                                        if a["action"].startswith("settings_")), None)
+                                        if a["action"].startswith(("settings_", "optimizer_apply",
+                                                                   "optimizer_rollback"))), None)
                     data = build_analysis(store_for(mode).read_trades(), cfg, lambda p: pair_cfg(cfg, p),
                                           period, last_change)
                     data.update({"mode": mode, "current_mode": cfg["mode"]})
                     return self._json(data)
+                if path == "/api/optimizer":
+                    return self._json(opt.overview())
                 if path == "/api/chart":
                     from urllib.parse import parse_qs, urlparse
                     qs = parse_qs(urlparse(self.path).query)
@@ -549,6 +572,24 @@ def make_handler(ctx, setup_token: dict):
                     return self._cred_telegram(method, body, sess)
                 if path == "/api/account/password":
                     return self._change_password(body, sess)
+                if path == "/api/optimizer/run" and method == "POST":
+                    if not opt.trigger(user):
+                        return self._json({"error": "Optimizer sedang berjalan, tunggu sampai selesai."}, 409)
+                    db.audit(user, "optimizer_run", "dijalankan manual", self.ip)
+                    return self._json({"ok": True, "message": "Optimizer dijalankan. Hasil muncul dalam 1–3 menit."})
+                m = re.fullmatch(r"/api/optimizer/runs/(\d+)/(apply|reject|rollback)", path)
+                if m and method == "POST":
+                    rid, act = int(m.group(1)), m.group(2)
+                    if act == "apply":
+                        opt.apply_run(rid, user)
+                        msg = "Usulan diterapkan. Bot memakai pengaturan baru dalam ±20 detik."
+                    elif act == "reject":
+                        opt.reject_run(rid, user)
+                        msg = "Usulan ditolak."
+                    else:
+                        opt.rollback_run(rid, user)
+                        msg = "Pengaturan sebelum perubahan ini dipulihkan."
+                    return self._json({"ok": True, "message": msg, **opt.overview()})
                 self._json({"error": "tidak ditemukan"}, 404)
             except (ValueError, ConfigError) as e:
                 self._json({"error": str(e)}, 400)
@@ -658,6 +699,11 @@ def make_handler(ctx, setup_token: dict):
                         c = svc.credentials()
                         if not c["api_key"] or not c["secret_key"]:
                             return self._json({"error": "Isi API key Indodax dulu sebelum beralih ke mode LIVE."}, 400)
+            if section == "optimizer" and str(value.get("apply_in_live", "")).lower() in ("true", "1", "yes") \
+                    and not cfg_now()["optimizer"]["apply_in_live"]:
+                if not self._check_pw(sess, body.get("password")):
+                    return self._json({"error": "Password diperlukan untuk mengizinkan optimizer mengubah "
+                                                "pengaturan saat mode LIVE."}, 403)
             before = svc.sections().get(section)
             svc.update(section, value, user=user)
             after = svc.sections().get(section)
@@ -797,7 +843,10 @@ def serve(ctx, host: str = None, port: int = None) -> None:
         setup_token["value"] = pysecrets.token_hex(4).upper()
         log.warning("Belum ada akun admin. Buka dashboard dan masukkan KODE SETUP: %s "
                     "(atau buat lewat terminal: python -m bot user add admin)", setup_token["value"])
-    httpd = ThreadingHTTPServer((host, port), make_handler(ctx, setup_token))
+    from .optimizer import OptimizerThread
+    opt = make_optimizer(ctx)
+    OptimizerThread(opt).start()     # evaluasi & penyetelan strategi berkala di background
+    httpd = ThreadingHTTPServer((host, port), make_handler(ctx, setup_token, opt))
     shown = "localhost" if _is_loopback(host) else host
     log.info("Dashboard aktif di http://%s:%d", shown, port)
     behind_https_proxy = any(os.environ.get(k) for k in ("RAILWAY_ENVIRONMENT", "RAILWAY_ENVIRONMENT_NAME",

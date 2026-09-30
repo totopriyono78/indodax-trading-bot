@@ -450,6 +450,19 @@ def cmd_user(ctx, args):
         print("Password diganti. Semua sesi login akun ini dikeluarkan.")
 
 
+def cmd_optimize(ctx, args):
+    """Jalankan optimizer satu kali (tanpa menunggu jadwal)."""
+    from .web import make_optimizer
+    run = make_optimizer(ctx).run_once("manual", user="cli")
+    if run is None:
+        print("Optimizer sedang berjalan di proses lain.")
+        return 1
+    print(f"#{run['id']} {run['status']}: {run['data'].get('summary', '')}")
+    for n in run["data"].get("notes", []):
+        print("  -", n)
+    return 0
+
+
 def cmd_flag(ctx, name, create=True, msg=""):
     ctx.store_for(ctx.cfg["mode"]).set_flag(name, create)
     if msg:
@@ -481,6 +494,7 @@ def main(argv=None):
     w = sub.add_parser("web")
     w.add_argument("--host")
     w.add_argument("--port", type=int)
+    sub.add_parser("optimize", help="evaluasi & setel ulang strategi sekarang")
     sub.add_parser("pause")
     sub.add_parser("resume")
     sub.add_parser("sellall")
@@ -507,6 +521,8 @@ def main(argv=None):
     elif args.cmd == "all":
         from .supervisor import run_all
         run_all(ctx, args)
+    elif args.cmd == "optimize":
+        return cmd_optimize(ctx, args)
     elif args.cmd == "pause":
         cmd_flag(ctx, "PAUSE", True, "Bot tidak akan membuka posisi baru. Posisi terbuka tetap dijaga TP/SL.")
     elif args.cmd == "resume":

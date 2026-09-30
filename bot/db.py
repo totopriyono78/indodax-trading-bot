@@ -95,6 +95,15 @@ logs_t = Table(
     Column("source", String(16), nullable=False, default=""),
     Column("message", Text, nullable=False),
 )
+optimizer_t = Table(
+    "optimizer_runs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", Float, nullable=False),
+    Column("trading_mode", String(16), nullable=False),
+    Column("status", String(24), nullable=False),     # no_change / proposed / applied / rejected / rolled_back / error
+    Column("data", Text, nullable=False),             # JSON: ringkasan, usulan, bukti, snapshot sebelum/sesudah
+    Column("updated_at", Float, nullable=False),
+)
 meta_t = Table(
     "meta", metadata,
     Column("key", String(64), primary_key=True),
@@ -380,3 +389,35 @@ class Database:
         with self.engine.connect() as c:
             rows = c.execute(select(logs_t).order_by(logs_t.c.id.desc()).limit(n)).all()
         return [dict(r._mapping) for r in rows[::-1]]
+
+
+    # ------------------------------------------------------------ riwayat optimizer
+    def add_opt_run(self, ts: float, trading_mode: str, status: str, data: dict) -> int:
+        with self.engine.begin() as c:
+            r = c.execute(insert(optimizer_t).values(ts=ts, trading_mode=trading_mode, status=status,
+                                                     data=json.dumps(data, default=float), updated_at=time.time()))
+            return int(r.inserted_primary_key[0])
+
+    def update_opt_run(self, run_id: int, status: str, data: dict) -> None:
+        with self.engine.begin() as c:
+            c.execute(update(optimizer_t).where(optimizer_t.c.id == run_id)
+                      .values(status=status, data=json.dumps(data, default=float), updated_at=time.time()))
+
+    def get_opt_run(self, run_id: int):
+        with self.engine.connect() as c:
+            r = c.execute(select(optimizer_t).where(optimizer_t.c.id == run_id)).first()
+        return self._opt_row(r) if r else None
+
+    def list_opt_runs(self, limit: int = 30, status: str = None) -> list:
+        q = select(optimizer_t)
+        if status:
+            q = q.where(optimizer_t.c.status == status)
+        with self.engine.connect() as c:
+            rows = c.execute(q.order_by(optimizer_t.c.id.desc()).limit(limit)).all()
+        return [self._opt_row(r) for r in rows]
+
+    @staticmethod
+    def _opt_row(r) -> dict:
+        d = dict(r._mapping)
+        d["data"] = json.loads(d["data"]) if d.get("data") else {}
+        return d

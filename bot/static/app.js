@@ -45,6 +45,7 @@ const App = {
     el.innerHTML = `
       <a href="/" class="${active === "dash" ? "active" : ""}">Dashboard</a>
       <a href="/analysis" class="${active === "analysis" ? "active" : ""}">Analisis</a>
+      <a href="/optimizer" class="${active === "optimizer" ? "active" : ""}">Optimasi</a>
       <a href="/settings" class="${active === "settings" ? "active" : ""}">Pengaturan</a>
       <span class="spacer"></span>
       <span class="who">${App.esc(App.user)}</span>

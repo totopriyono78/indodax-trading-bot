@@ -19,7 +19,8 @@ import yaml
 from .config import DEFAULTS, ConfigError, _merge, validate
 from .db import Database
 
-SECTIONS = ("general", "strategy", "exits", "risk", "fees", "paper", "telegram", "dashboard", "pairs")
+SECTIONS = ("general", "strategy", "exits", "risk", "fees", "paper", "telegram", "dashboard", "pairs",
+            "optimizer")
 GENERAL_KEYS = ("mode", "timeframe", "poll_seconds", "candles_lookback")
 PAIR_FIELDS = ("stop_loss_pct", "take_profit_pct", "trailing_stop_pct", "trailing_activation_pct", "idr_per_trade")
 PAIR_RE = re.compile(r"^[a-z0-9]{1,20}idr$")
@@ -39,6 +40,9 @@ FIELD_TYPES = {
     "paper": {"starting_idr": float, "slippage_pct": float},
     "telegram": {"enabled": bool},
     "dashboard": {"allow_control": bool},
+    "optimizer": {"enabled": bool, "mode": str, "apply_in_live": bool, "interval_hours": float, "min_trades": int,
+                  "lookback_days": int, "max_step_pct": float, "rollback": bool, "eval_trades": int,
+                  "allow_disable_pairs": bool},
 }
 
 
@@ -126,6 +130,7 @@ def sections_from_flat(cfg: dict) -> dict:
         "strategy": cfg["strategy"], "exits": cfg["exits"], "risk": cfg["risk"], "fees": cfg["fees"],
         "paper": cfg["paper"], "telegram": {"enabled": bool(cfg["telegram"].get("enabled"))},
         "dashboard": {"allow_control": bool(cfg["dashboard"].get("allow_control", True))},
+        "optimizer": dict(cfg.get("optimizer") or DEFAULTS["optimizer"]),
         "pairs": _clean_pairs(pairs),
     }
 
@@ -134,7 +139,7 @@ def assemble(sections: dict, boot: dict) -> dict:
     """Gabungkan DEFAULTS + isi database + bootstrap menjadi cfg lengkap."""
     cfg = copy.deepcopy(DEFAULTS)
     cfg.update({k: v for k, v in (sections.get("general") or {}).items() if k in GENERAL_KEYS})
-    for s in ("strategy", "exits", "risk", "fees", "paper", "telegram"):
+    for s in ("strategy", "exits", "risk", "fees", "paper", "telegram", "optimizer"):
         cfg[s] = _merge(cfg[s], sections.get(s) or {})
     cfg["dashboard"] = _merge(cfg["dashboard"], sections.get("dashboard") or {})
     cfg["dashboard"].update(boot.get("dashboard", {}))

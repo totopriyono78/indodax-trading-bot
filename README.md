@@ -160,6 +160,31 @@ SL/TP yang berlaku, serta kenaikan tertinggi & penurunan terdalam selama posisi 
 dihitung di ringkasan, tetapi tidak punya data rinci tersebut. Uji setiap perubahan dengan `backtest --sweep`
 dan mode simulasi sebelum dipakai LIVE.
 
+### Halaman Optimasi (optimizer otomatis di background)
+
+Modul **optimizer** berjalan di background (di dalam proses dashboard, jadi otomatis aktif dengan
+`python -m bot all` maupun `python -m bot web`). Default: sekali tiap 24 jam; bisa dipicu dengan tombol
+**Jalankan sekarang** atau `python -m bot optimize`. Tiap putaran:
+
+1. **Evaluasi perubahan sebelumnya.** Setelah perubahan terakhir menghasilkan cukup transaksi
+   (default 15), hasilnya dibandingkan dengan jumlah transaksi yang sama sebelum perubahan. Jika rugi dan
+   rata-rata per transaksi turun > 0,3 poin, **nilai lama dipulihkan otomatis (rollback)** dan nilai yang
+   gagal itu tidak dicoba lagi selama periode data.
+2. **Cek data.** Butuh minimal 20 transaksi selesai dalam 30 hari terakhir (bisa diatur); kalau kurang, dilewati.
+3. **Cari pengaturan lebih baik per pair.** Stop loss, take profit, trailing stop dan aktivasi trailing diuji
+   di sekitar nilai sekarang (maks. ±25% per langkah) pada candle 30 hari terakhir, ditambah petunjuk dari
+   jurnal (kenaikan/penurunan terdalam tiap posisi). 70% data dipakai memilih, 30% sisanya untuk menguji ulang.
+   Kandidat hanya diterima jika **lebih baik di kedua bagian data**, profit di data uji, dan unggul ≥1% modal.
+4. **Terapkan atau usulkan.** Mode *Otomatis* langsung menerapkan (dicatat di audit + Telegram). Di mode
+   **LIVE hanya usulan**, kecuali "Boleh menerapkan otomatis saat mode LIVE" diaktifkan (butuh password).
+   Mode *Usulan saja* selalu menunggu tombol **Terapkan / Tolak**. Setiap perubahan bisa dibatalkan
+   dengan **Kembalikan ke sebelumnya** (nilai yang sudah Anda ubah manual tidak ditimpa).
+
+Batas keamanan: nilai selalu dalam rentang SL 0,8–10%, TP 1,5–20%, trailing 0,5–6%, aktivasi 0,8–10%;
+fitur yang Anda matikan (nilai 0) tetap mati; optimizer tidak pernah mengubah mode, modal per transaksi,
+batas rugi harian, maupun kredensial; menonaktifkan pair yang terus rugi hanya jika diizinkan. Tetap
+diingat: hasil backtest tidak menjamin profit ke depan.
+
 ### Siapkan API key TAPI v2
 
 1. Login Indodax → **https://indodax.com/trade_api** → buat key **TAPI v2** (key TAPI lama tidak bisa dipakai).
@@ -196,6 +221,7 @@ Data simulasi dan live disimpan terpisah di database, jadi keduanya tidak saling
 | `python -m bot all` | Dashboard + bot dalam satu proses (dipakai Railway / Docker) |
 | `python -m bot user add/passwd/list` | Kelola akun login dashboard |
 | `python -m bot status` | Posisi terbuka, PnL hari ini & total, win rate |
+| `python -m bot optimize` | Jalankan optimizer sekali sekarang (evaluasi + penyetelan strategi) |
 | `python -m bot pause` / `resume` | Stop / lanjutkan membuka posisi baru |
 | `python -m bot sellall` | Jual semua posisi bot dan pause pembelian baru |
 | `sudo systemctl stop indodax-bot` | Matikan bot (posisi **tidak** dijual otomatis) |
@@ -272,6 +298,7 @@ bot/
   settings.py    pengaturan dari database + pengaturan per pair
   web.py         dashboard web: login, monitoring, pengaturan (+ *.html, static/)
   analysis.py    statistik & saran perbaikan dari jurnal transaksi
+  optimizer.py   evaluasi berkala, penyetelan SL/TP/trailing otomatis, rollback
   supervisor.py  `bot all`: dashboard + bot dalam satu container (Railway)
 tests/           uji otomatis dengan data & API palsu (python -m pytest)
 deploy/          install.sh & layanan systemd
