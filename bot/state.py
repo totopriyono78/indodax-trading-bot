@@ -120,11 +120,12 @@ class StateStore:
         except (OSError, ValueError):
             return None
 
-    def read_trades(self, limit: int = 0) -> list:
+    def read_trades(self, limit: int = 0, pair: str = None, side: str = None) -> list:
         if not self.trades_path.exists():
             return []
         with self.trades_path.open(newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
+            rows = [r for r in csv.DictReader(f)
+                    if (not pair or r.get("pair") == pair) and (not side or r.get("sisi") == side)]
         return rows[-limit:] if limit else rows
 
     def log_trade(self, *, pair, side, qty, price, idr, fee_idr=0.0, pnl_idr=None, pnl_pct=None,
@@ -202,10 +203,10 @@ class DbStateStore:
                           pnl_pct=None if pnl_pct is None else float(pnl_pct), reason=reason or "",
                           order_id=str(order_id or ""))
 
-    def read_trades(self, limit: int = 0) -> list:
+    def read_trades(self, limit: int = 0, pair: str = None, side: str = None) -> list:
         """Format sama dengan CSV lama (string), agar dashboard & ekspor tetap cocok."""
         out = []
-        for r in self.db.list_trades(self.mode, limit):
+        for r in self.db.list_trades(self.mode, limit, pair=pair, side=side):
             out.append({
                 "waktu_wib": fmt_time(r["ts"]), "mode": r["mode"], "pair": r["pair"], "sisi": r["side"],
                 "qty": f"{r['qty']:.8f}", "harga": f"{r['price']:.8f}", "idr": f"{r['idr']:.0f}",

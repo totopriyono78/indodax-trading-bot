@@ -366,14 +366,23 @@ class Database:
         with self.engine.begin() as c:
             c.execute(insert(trades_t).values(**row))
 
-    def list_trades(self, mode: str, limit: int = 0) -> list:
+    def list_trades(self, mode: str, limit: int = 0, pair: str = None, side: str = None) -> list:
         q = select(trades_t).where(trades_t.c.mode == mode)
+        if pair:
+            q = q.where(trades_t.c.pair == pair)
+        if side:
+            q = q.where(trades_t.c.side == side)
         with self.engine.connect() as c:
             if limit:
                 rows = c.execute(q.order_by(trades_t.c.id.desc()).limit(limit)).all()[::-1]
             else:
                 rows = c.execute(q.order_by(trades_t.c.id)).all()
         return [dict(r._mapping) for r in rows]
+
+    def trade_pairs(self, mode: str) -> list:
+        with self.engine.connect() as c:
+            rows = c.execute(select(trades_t.c.pair).where(trades_t.c.mode == mode).distinct()).all()
+        return sorted(r[0] for r in rows)
 
     # ------------------------------------------------------------ log
     def add_logs(self, rows: list, keep: int = 3000) -> None:

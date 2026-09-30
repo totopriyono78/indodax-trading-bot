@@ -165,6 +165,49 @@ def build_summary(cfg: dict, store=None) -> dict:
     }
 
 
+TRADE_META_KEYS = ("hold_s", "mfe_pct", "mae_pct", "entry_price", "rsi")
+
+
+def build_trades(cfg: dict, store, pair: str = "", side: str = "", limit: int = 100) -> dict:
+    """Jurnal transaksi dengan filter pair / sisi, plus ringkasan untuk filter tersebut."""
+    pair = (pair or "").lower().strip()
+    side = (side or "").upper().strip()
+    if pair and not re.fullmatch(r"[a-z0-9]{1,20}idr", pair):
+        raise ValueError("pair tidak valid")
+    if side not in ("", "BUY", "SELL"):
+        raise ValueError("sisi harus BUY atau SELL")
+    limit = max(1, min(int(limit or 100), 500))
+    rows = store.read_trades(pair=pair or None)          # semua transaksi pair ini (untuk ringkasan)
+    sells = [t for t in rows if t.get("sisi") == "SELL" and t.get("pnl_idr") not in ("", None)]
+    pnl = [_f(t["pnl_idr"]) for t in sells]
+    holds = [(t.get("meta") or {}).get("hold_s") for t in sells]
+    holds = [h for h in holds if h]
+    st = store.load()
+    summary = {
+        "buys": sum(1 for t in rows if t.get("sisi") == "BUY"), "sells": len(sells),
+        "pnl": sum(pnl), "wins": sum(1 for v in pnl if v > 0),
+        "win_rate": (sum(1 for v in pnl if v > 0) / len(pnl) * 100) if pnl else None,
+        "fees": sum(_f(t.get("fee_idr")) for t in rows),
+        "avg_hold_s": (sum(holds) / len(holds)) if holds else None,
+        "first": rows[0].get("ts") if rows else None, "last": rows[-1].get("ts") if rows else None,
+        "open": [p for p in st.positions if not pair or p == pair],
+    }
+    shown = [t for t in rows if not side or t.get("sisi") == side][-limit:]
+    out = []
+    for t in reversed(shown):
+        m = t.get("meta") or {}
+        out.append({**{k: v for k, v in t.items() if k != "meta"},
+                    "meta": {k: m[k] for k in TRADE_META_KEYS if m.get(k) is not None}})
+    known = set(cfg["pairs"]) | set(cfg.get("pair_settings") or {})
+    try:
+        known |= set(store.db.trade_pairs(store.mode))
+    except AttributeError:
+        known |= {t.get("pair") for t in store.read_trades() if t.get("pair")}
+    return {"pair": pair, "side": side, "limit": limit, "trades": out, "summary": summary,
+            "total_rows": len([t for t in rows if not side or t.get("sisi") == side]),
+            "pairs": sorted(known), "mode": cfg["mode"]}
+
+
 def tail_log(db, lines: int = 120) -> list:
     rows = db.tail_logs(lines) if db is not None else []
     return [r["message"] for r in rows]
@@ -498,6 +541,15 @@ def make_handler(ctx, setup_token: dict, optimizer=None):
                                           period, last_change)
                     data.update({"mode": mode, "current_mode": cfg["mode"]})
                     return self._json(data)
+                if path == "/api/trades":
+                    from urllib.parse import parse_qs, urlparse
+                    qs = parse_qs(urlparse(self.path).query)
+                    cfg = cfg_now()
+                    try:
+                        return self._json(build_trades(cfg, store_for(cfg["mode"]), (qs.get("pair") or [""])[0],
+                                                       (qs.get("side") or [""])[0], (qs.get("limit") or ["100"])[0]))
+                    except ValueError as e:
+                        return self._json({"error": str(e)}, 400)
                 if path == "/api/optimizer":
                     return self._json(opt.overview())
                 if path == "/api/chart":

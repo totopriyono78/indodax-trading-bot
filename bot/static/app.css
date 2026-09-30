@@ -127,3 +127,16 @@ input.small::placeholder { color: var(--muted); }
 
 .uptime { font-size: 13px; color: var(--text-2); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .uptime b { color: var(--text); }
+/* filter transaksi */
+.tr-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 8px; }
+.tr-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+select.inline { width: auto; padding: 6px 8px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 6px 12px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.active { background: var(--btn); color: var(--btn-text); }
+.tr-sum { display: flex; gap: 6px 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.tr-sum:empty { display: none; }
+.tr-sum b { color: var(--text); } .tr-sum b.pos { color: var(--good-text); } .tr-sum b.neg { color: var(--critical-text); }
+.tr-sum a { color: var(--series-1); }
+button.linkish { background: none; border: 0; padding: 0; font-weight: 600; color: var(--text); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }

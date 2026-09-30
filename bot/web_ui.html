@@ -59,7 +59,16 @@
   </div>
 
   <div class="card section">
-    <h2>Transaksi terakhir</h2>
+    <div class="tr-head">
+      <h2 style="margin:0">Transaksi</h2>
+      <div class="tr-filters">
+        <select id="tr-pair" class="inline" aria-label="Filter pair"><option value="">Semua pair</option></select>
+        <div class="seg" id="tr-side" role="group" aria-label="Filter sisi">
+          <button data-s="" class="active">Semua</button><button data-s="BUY">Beli</button><button data-s="SELL">Jual</button>
+        </div>
+      </div>
+    </div>
+    <div class="tr-sum" id="tr-sum"></div>
     <div class="tbl" id="trades"></div>
   </div>
 
@@ -122,8 +131,73 @@ const REASONS = { take_profit: "Take profit", stop_loss: "Stop loss", trailing_s
 
 let DATA = null;
 let SHOW_ALL = false;
+const TF = { pair: "", side: "" };
+try { Object.assign(TF, JSON.parse(localStorage.getItem("trade_filter") || "{}")); } catch (e) {}
+let TR = null, TR_SEQ = 0;
+
+async function loadTrades() {
+  const seq = ++TR_SEQ;
+  try {
+    const q = new URLSearchParams({ pair: TF.pair, side: TF.side, limit: SHOW_ALL ? 300 : 100 });
+    const r = await App.api("GET", "/api/trades?" + q);
+    if (seq !== TR_SEQ) return;          // sudah ada permintaan yang lebih baru
+    TR = r; renderTrades();
+  } catch (e) {
+    if (TF.pair && /tidak valid/.test(e.message)) { setFilter({ pair: "" }); return; }
+    $("trades").innerHTML = `<div class="muted">Gagal memuat transaksi: ${esc(e.message)}</div>`;
+  }
+}
+function setFilter(ch) {
+  Object.assign(TF, ch); SHOW_ALL = false;
+  try { localStorage.setItem("trade_filter", JSON.stringify(TF)); } catch (e) {}
+  loadTrades();
+}
+function renderTrades() {
+  const r = TR, sm = r.summary;
+  const sel = $("tr-pair");
+  const opts = [""].concat(r.pairs.includes(TF.pair) || !TF.pair ? r.pairs : r.pairs.concat([TF.pair]));
+  const html = opts.map((p) => `<option value="${esc(p)}">${p ? esc(p.toUpperCase()) : "Semua pair"}</option>`).join("");
+  if (sel.dataset.h !== html) { sel.innerHTML = html; sel.dataset.h = html; }
+  sel.value = TF.pair;
+  $("tr-side").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.s === TF.side));
+
+  const scope = TF.pair ? TF.pair.toUpperCase() : "semua pair";
+  const openTxt = sm.open.length ? ` · <b>posisi terbuka</b>: ${sm.open.map((p) => esc(p.toUpperCase())).join(", ")}` : "";
+  const chart = TF.pair && document.getElementById("pc-" + TF.pair) ? `<a href="#" id="tr-chart">lihat grafik ${esc(TF.pair.toUpperCase())}</a>` : "";
+  $("tr-sum").innerHTML = (sm.buys || sm.sells) ?
+    `<span>${esc(scope)}: <b>${nf0.format(sm.buys)}</b> beli · <b>${nf0.format(sm.sells)}</b> jual</span>
+     <span>PnL <b class="${cls(sm.pnl)}">${arrow(sm.pnl)}${rp(sm.pnl, true)}</b></span>
+     <span>win rate <b>${sm.win_rate == null ? "—" : nf0.format(sm.win_rate) + "%"}</b>${sm.sells ? ` (${sm.wins}/${sm.sells})` : ""}</span>
+     <span>fee <b>${rp(sm.fees)}</b></span>
+     <span>rata-rata tahan <b>${sm.avg_hold_s ? dur(sm.avg_hold_s) : "—"}</b></span>${openTxt}${chart}` : "";
+  const ch = $("tr-chart");
+  if (ch) ch.onclick = (e) => { e.preventDefault(); document.getElementById("pc-" + TF.pair).scrollIntoView({ behavior: "smooth", block: "center" }); };
+
+  if (!r.trades.length) {
+    $("trades").innerHTML = `<div class="muted">${TF.pair || TF.side ? "Tidak ada transaksi untuk filter ini." : "Belum ada transaksi."}</div>`;
+    return;
+  }
+  const rows = r.trades.slice(0, SHOW_ALL ? r.trades.length : 12);
+  $("trades").innerHTML = `<table><thead><tr><th>Waktu (WIB)</th>${TF.pair ? "" : "<th>Pair</th>"}<th>Sisi</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Nilai</th><th class="num">Fee</th><th class="num">PnL</th><th class="num">Lama tahan</th><th>Alasan</th></tr></thead><tbody>` +
+    rows.map((t) => {
+      const pnl = t.pnl_idr === "" ? null : Number(t.pnl_idr);
+      const buy = t.sisi === "BUY";
+      return `<tr><td>${esc(t.waktu_wib)}</td>${TF.pair ? "" : `<td><button class="linkish" data-pair="${esc(t.pair)}" title="Tampilkan hanya ${esc(t.pair.toUpperCase())}">${esc(t.pair.toUpperCase())}</button></td>`}
+      <td><span class="tag ${buy ? "buy" : "exit"}">${buy ? "BELI" : "JUAL"}</span></td>
+      <td class="num">${qty(Number(t.qty))}</td><td class="num">${px(Number(t.harga))}</td>
+      <td class="num">${rp(Number(t.idr))}</td><td class="num">${rp(Number(t.fee_idr))}</td>
+      <td class="num ${cls(pnl)}">${pnl === null ? "" : arrow(pnl) + rp(pnl, true) + ` <span class="muted">(${pct(Number(t.pnl_pct))})</span>`}</td>
+      <td class="num">${t.meta && t.meta.hold_s ? dur(t.meta.hold_s) : ""}</td>
+      <td class="wrap-text">${esc(REASONS[t.alasan] || t.alasan)}</td></tr>`;
+    }).join("") + `</tbody></table>` +
+    (r.trades.length > 12 || r.total_rows > r.trades.length ? `<button id="more" style="margin-top:10px">${SHOW_ALL ? "Tampilkan lebih sedikit" : "Tampilkan " + Math.min(r.total_rows, 300) + " transaksi terakhir"}</button>` : "");
+  $("trades").querySelectorAll("button[data-pair]").forEach((b) => (b.onclick = () => setFilter({ pair: b.dataset.pair })));
+  const more = $("more"); if (more) more.onclick = () => { SHOW_ALL = !SHOW_ALL; loadTrades(); };
+}
 
 function toast(msg) { App.toast(msg); }
+$("tr-pair").onchange = () => setFilter({ pair: $("tr-pair").value });
+$("tr-side").querySelectorAll("button").forEach((b) => (b.onclick = () => setFilter({ side: b.dataset.s })));
 
 async function load() {
   try {
@@ -218,23 +292,7 @@ function render(d) {
         <td class="wrap-text">${esc(note)}</td><td>${g.candle_time ? wib(g.candle_time) : "—"}</td></tr>`;
     }).join("") + `</tbody></table>`;
 
-  // transaksi
-  if (!d.trades.length) {
-    $("trades").innerHTML = `<div class="muted">Belum ada transaksi.</div>`;
-  } else {
-    $("trades").innerHTML = `<table><thead><tr><th>Waktu (WIB)</th><th>Pair</th><th>Sisi</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Nilai</th><th class="num">Fee</th><th class="num">PnL</th><th>Alasan</th></tr></thead><tbody>` +
-      d.trades.slice(0, SHOW_ALL ? 50 : 12).map((t) => {
-        const pnl = t.pnl_idr === "" ? null : Number(t.pnl_idr);
-        return `<tr><td>${esc(t.waktu_wib)}</td><td>${esc(t.pair.toUpperCase())}</td>
-        <td><span class="tag ${t.sisi === "BUY" ? "buy" : "exit"}">${t.sisi === "BUY" ? "BELI" : "JUAL"}</span></td>
-        <td class="num">${qty(Number(t.qty))}</td><td class="num">${px(Number(t.harga))}</td>
-        <td class="num">${rp(Number(t.idr))}</td><td class="num">${rp(Number(t.fee_idr))}</td>
-        <td class="num ${cls(pnl)}">${pnl === null ? "" : arrow(pnl) + rp(pnl, true) + ` <span class="muted">(${pct(Number(t.pnl_pct))})</span>`}</td>
-        <td class="wrap-text">${esc(REASONS[t.alasan] || t.alasan)}</td></tr>`;
-      }).join("") + `</tbody></table>` +
-      (d.trades.length > 12 ? `<button id="more" style="margin-top:10px">${SHOW_ALL ? "Tampilkan lebih sedikit" : "Tampilkan " + d.trades.length + " transaksi terakhir"}</button>` : "");
-    const more = $("more"); if (more) more.onclick = () => { SHOW_ALL = !SHOW_ALL; render(DATA); };
-  }
+  loadTrades();
 
   // pengaturan
   const set = [

@@ -567,3 +567,39 @@ def test_uptime_duration_format_and_tracking(tmp_path):
     eng2.startup(); eng2.tick()
     d = build_summary(cfg, DbStateStore(ctx.db, "paper"))
     assert d["running_since"] == t0 and d["session_since"] == t1
+
+
+def test_trades_api_filter(server):
+    ctx, url, _ = server
+    ctx.db.add_user("admin", "password-kuat-1")
+    t0 = time.time() - 3600
+    for i, (pair, side, pnl) in enumerate([("btcidr", "BUY", None), ("btcidr", "SELL", 1500), ("pepeidr", "BUY", None),
+                                            ("pepeidr", "SELL", -800), ("btcidr", "BUY", None), ("btcidr", "SELL", -200)]):
+        ctx.db.add_trade(ts=t0 + i * 60, mode="paper", pair=pair, side=side, qty=1, price=100, idr=100000,
+                         fee_idr=300, pnl_idr=pnl, pnl_pct=None if pnl is None else pnl / 1000, reason="x",
+                         order_id="", meta='{"hold_s": 120, "rsi": 55, "entry_ctx_big": "x"}' if side == "SELL" else None)
+    s = _login(url)
+    assert rq.get(url + "/api/trades").status_code == 401
+    r = s.get(url + "/api/trades").json()
+    assert len(r["trades"]) == 6 and r["trades"][0]["sisi"] == "SELL" and "btcidr" in r["pairs"]
+    r = s.get(url + "/api/trades", params={"pair": "btcidr"}).json()
+    assert {t["pair"] for t in r["trades"]} == {"btcidr"} and len(r["trades"]) == 4
+    sm = r["summary"]
+    assert sm["buys"] == 2 and sm["sells"] == 2 and sm["pnl"] == 1300 and sm["wins"] == 1 and sm["avg_hold_s"] == 120
+    assert r["trades"][0]["meta"] == {"hold_s": 120, "rsi": 55}
+    r = s.get(url + "/api/trades", params={"pair": "btcidr", "side": "SELL"}).json()
+    assert [t["sisi"] for t in r["trades"]] == ["SELL", "SELL"] and r["summary"]["buys"] == 2
+    r = s.get(url + "/api/trades", params={"side": "BUY", "limit": 2}).json()
+    assert len(r["trades"]) == 2 and r["total_rows"] == 3
+    assert s.get(url + "/api/trades", params={"pair": "x'; drop"}).status_code == 400
+    assert s.get(url + "/api/trades", params={"side": "HOLD"}).status_code == 400
+
+
+def test_file_store_trade_filter(tmp_path):
+    from bot.state import StateStore
+    st = StateStore(str(tmp_path), "paper")
+    st.log_trade(pair="btcidr", side="BUY", qty=1, price=1, idr=100)
+    st.log_trade(pair="ethidr", side="BUY", qty=1, price=1, idr=100)
+    st.log_trade(pair="btcidr", side="SELL", qty=1, price=1, idr=100, pnl_idr=5, pnl_pct=5)
+    assert len(st.read_trades(pair="btcidr")) == 2
+    assert [t["pair"] for t in st.read_trades(side="BUY")] == ["btcidr", "ethidr"]
