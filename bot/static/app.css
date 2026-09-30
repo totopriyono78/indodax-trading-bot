@@ -140,3 +140,4 @@ select.inline { width: auto; padding: 6px 8px; }
 .tr-sum b { color: var(--text); } .tr-sum b.pos { color: var(--good-text); } .tr-sum b.neg { color: var(--critical-text); }
 .tr-sum a { color: var(--series-1); }
 button.linkish { background: none; border: 0; padding: 0; font-weight: 600; color: var(--text); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+.chg { font-size: 12px; font-weight: 600; margin-left: 4px; white-space: nowrap; }

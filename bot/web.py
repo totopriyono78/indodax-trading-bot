@@ -192,12 +192,23 @@ def build_trades(cfg: dict, store, pair: str = "", side: str = "", limit: int = 
         "first": rows[0].get("ts") if rows else None, "last": rows[-1].get("ts") if rows else None,
         "open": [p for p in st.positions if not pair or p == pair],
     }
+    # harga jual dibanding harga beli posisi yang sama (meta.entry_price, atau BUY terakhir pair itu)
+    last_buy, chg = {}, {}
+    for i, t in enumerate(rows):
+        if t.get("sisi") == "BUY":
+            last_buy[t.get("pair")] = _f(t.get("harga"))
+        elif t.get("sisi") == "SELL":
+            entry = _f((t.get("meta") or {}).get("entry_price")) or last_buy.pop(t.get("pair"), 0)
+            if entry:
+                chg[id(t)] = (entry, (_f(t.get("harga")) / entry - 1) * 100)
     shown = [t for t in rows if not side or t.get("sisi") == side][-limit:]
     out = []
     for t in reversed(shown):
         m = t.get("meta") or {}
         out.append({**{k: v for k, v in t.items() if k != "meta"},
-                    "meta": {k: m[k] for k in TRADE_META_KEYS if m.get(k) is not None}})
+                    "meta": {k: m[k] for k in TRADE_META_KEYS if m.get(k) is not None},
+                    "buy_price": chg[id(t)][0] if id(t) in chg else None,
+                    "price_chg_pct": chg[id(t)][1] if id(t) in chg else None})
     known = set(cfg["pairs"]) | set(cfg.get("pair_settings") or {})
     try:
         known |= set(store.db.trade_pairs(store.mode))

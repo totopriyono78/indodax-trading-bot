@@ -184,7 +184,8 @@ function renderTrades() {
       const buy = t.sisi === "BUY";
       return `<tr><td>${esc(t.waktu_wib)}</td>${TF.pair ? "" : `<td><button class="linkish" data-pair="${esc(t.pair)}" title="Tampilkan hanya ${esc(t.pair.toUpperCase())}">${esc(t.pair.toUpperCase())}</button></td>`}
       <td><span class="tag ${buy ? "buy" : "exit"}">${buy ? "BELI" : "JUAL"}</span></td>
-      <td class="num">${qty(Number(t.qty))}</td><td class="num">${px(Number(t.harga))}</td>
+      <td class="num">${qty(Number(t.qty))}</td><td class="num">${px(Number(t.harga))}${t.price_chg_pct == null ? "" :
+        ` <span class="chg ${cls(t.price_chg_pct)}" title="Dibanding harga beli ${px(t.buy_price)} (sebelum fee)">${arrow(t.price_chg_pct)}${pct(t.price_chg_pct)}</span>`}</td>
       <td class="num">${rp(Number(t.idr))}</td><td class="num">${rp(Number(t.fee_idr))}</td>
       <td class="num ${cls(pnl)}">${pnl === null ? "" : arrow(pnl) + rp(pnl, true) + ` <span class="muted">(${pct(Number(t.pnl_pct))})</span>`}</td>
       <td class="num">${t.meta && t.meta.hold_s ? dur(t.meta.hold_s) : ""}</td>

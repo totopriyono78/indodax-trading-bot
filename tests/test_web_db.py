@@ -587,6 +587,8 @@ def test_trades_api_filter(server):
     sm = r["summary"]
     assert sm["buys"] == 2 and sm["sells"] == 2 and sm["pnl"] == 1300 and sm["wins"] == 1 and sm["avg_hold_s"] == 120
     assert r["trades"][0]["meta"] == {"hold_s": 120, "rsi": 55}
+    assert r["trades"][0]["buy_price"] == 100 and r["trades"][0]["price_chg_pct"] == 0
+    assert r["trades"][1]["price_chg_pct"] is None           # baris BELI
     r = s.get(url + "/api/trades", params={"pair": "btcidr", "side": "SELL"}).json()
     assert [t["sisi"] for t in r["trades"]] == ["SELL", "SELL"] and r["summary"]["buys"] == 2
     r = s.get(url + "/api/trades", params={"side": "BUY", "limit": 2}).json()
@@ -603,3 +605,16 @@ def test_file_store_trade_filter(tmp_path):
     st.log_trade(pair="btcidr", side="SELL", qty=1, price=1, idr=100, pnl_idr=5, pnl_pct=5)
     assert len(st.read_trades(pair="btcidr")) == 2
     assert [t["pair"] for t in st.read_trades(side="BUY")] == ["btcidr", "ethidr"]
+
+
+def test_trade_price_change_vs_buy(tmp_path):
+    from bot.state import DbStateStore
+    from bot.web import build_trades
+    ctx = make_ctx(tmp_path)
+    t0 = time.time()
+    ctx.db.add_trade(ts=t0, mode="paper", pair="btcidr", side="BUY", qty=1, price=1_495_558_064, idr=100000,
+                     fee_idr=300, pnl_idr=None, pnl_pct=None, reason="", order_id="", meta=None)
+    ctx.db.add_trade(ts=t0 + 60, mode="paper", pair="btcidr", side="SELL", qty=1, price=1_499_388_111, idr=99439,
+                     fee_idr=510, pnl_idr=-561, pnl_pct=-0.56, reason="", order_id="", meta=None)
+    r = build_trades(ctx.svc.load(), DbStateStore(ctx.db, "paper"), "btcidr", "SELL")
+    assert round(r["trades"][0]["price_chg_pct"], 2) == 0.26
