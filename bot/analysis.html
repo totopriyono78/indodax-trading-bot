@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analisis — Bot Indodax</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js"></script>
+<style>
+.sugg { display: grid; gap: 8px; }
+.sg { display: grid; grid-template-columns: 26px 1fr; gap: 4px 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.sg .ic { font-weight: 800; font-size: 15px; line-height: 1.3; }
+.sg .t { font-weight: 650; }
+.sg .d { grid-column: 2; color: var(--text-2); font-size: 13.5px; }
+.sg .m { grid-column: 2; font-size: 12px; color: var(--muted); }
+.sg.bad .ic { color: var(--critical); } .sg.warn .ic { color: var(--serious); } .sg.info .ic { color: var(--series-1); } .sg.good .ic { color: var(--good); }
+.weak { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--text-2); margin-left: 6px; }
+.an-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.an-chart { position: relative; height: 240px; }
+.an-chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.expl { font-size: 12.5px; color: var(--text-2); margin: 4px 0 8px; }
+.tbl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 12px; }
+@media (max-width: 520px) { .tbl-grid { grid-template-columns: 1fr; } }
+select.inline { width: auto; padding: 6px 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="topnav" id="topnav"></nav>
+  <header>
+    <div>
+      <h1>Analisis hasil trading</h1>
+      <div class="muted" style="font-size:13px" id="sub">Memuat…</div>
+    </div>
+    <div class="controls" style="align-items:center">
+      <select id="mode" class="inline" aria-label="Mode"><option value="paper">Simulasi</option><option value="live">LIVE</option></select>
+      <div class="tabs" id="periods" style="margin:0"></div>
+    </div>
+  </header>
+
+  <div class="grid kpis" id="kpis"></div>
+
+  <div class="card section">
+    <h2>Saran perbaikan</h2>
+    <div class="expl">Dihitung otomatis dari transaksi yang sudah selesai. Ini petunjuk, bukan kepastian —
+      uji setiap perubahan dengan <code>backtest --sweep</code> dan mode simulasi sebelum dipakai LIVE.</div>
+    <div class="sugg" id="sugg"></div>
+  </div>
+
+  <div class="card section" id="compare-card" hidden>
+    <h2>Sebelum vs sesudah perubahan pengaturan terakhir</h2>
+    <div class="expl" id="compare-sub"></div>
+    <div class="tbl" id="compare"></div>
+  </div>
+
+  <div class="an-charts">
+    <div class="card"><h2>PnL per pair</h2><div class="an-chart" id="c-pair"></div></div>
+    <div class="card"><h2>Sebaran hasil per transaksi</h2>
+      <div class="expl">Berapa banyak transaksi pada tiap rentang untung/rugi (% setelah biaya).</div>
+      <div class="an-chart" id="c-dist"></div></div>
+  </div>
+  <div class="card section">
+    <h2>Kenaikan tertinggi vs penurunan terdalam selama posisi</h2>
+    <div class="expl">Setiap titik = satu transaksi. Sumbu datar: seberapa jauh harga sempat <b>turun</b> setelah dibeli;
+      sumbu tegak: seberapa jauh sempat <b>naik</b>. Titik rugi (▲ merah) yang tinggi berarti posisi sempat untung
+      lalu berbalik — tanda trailing stop / take profit perlu lebih dekat. Titik untung (● biru) yang jarang jauh ke
+      kiri berarti stop loss bisa diperketat.</div>
+    <div class="legend"><span><svg width="12" height="12"><circle cx="6" cy="6" r="4.5" fill="var(--series-1)"/></svg>untung</span>
+      <span><svg width="12" height="12"><path d="M6 1 L11 10 L1 10 Z" fill="var(--neg)"/></svg>rugi</span>
+      <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--critical)" stroke-dasharray="4 3"/></svg>stop loss sekarang</span>
+      <span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="var(--good)" stroke-dasharray="4 3"/></svg>aktivasi trailing sekarang</span></div>
+    <div class="an-chart" id="c-scatter" style="height:300px"></div>
+  </div>
+
+  <div class="tbl-grid">
+    <div class="card"><h2>Per pair</h2><div class="tbl" id="t-pair"></div></div>
+    <div class="card"><h2>Per alasan jual</h2><div class="tbl" id="t-reason"></div></div>
+    <div class="card"><h2>Per jam pembelian (WIB)</h2><div class="tbl" id="t-hour"></div></div>
+    <div class="card"><h2>Per lama posisi ditahan</h2><div class="tbl" id="t-hold"></div></div>
+    <div class="card"><h2>Per RSI saat membeli</h2><div class="tbl" id="t-rsi"></div></div>
+    <div class="card"><h2>Per pengaturan SL / TP</h2><div class="tbl" id="t-set"></div></div>
+  </div>
+  <footer id="footer"></footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = App.esc;
+const nf0 = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 });
+const nf1 = new Intl.NumberFormat("id-ID", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const nf2 = new Intl.NumberFormat("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const rp = (x, s) => x == null || isNaN(x) ? "—" : (x < 0 ? "−" : s && x > 0 ? "+" : "") + "Rp" + nf0.format(Math.abs(x));
+const pct = (x) => x == null || isNaN(x) ? "—" : (x > 0 ? "+" : x < 0 ? "−" : "") + nf2.format(Math.abs(x)) + "%";
+const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
+const arrow = (x) => x > 0 ? "▲ " : x < 0 ? "▼ " : "";
+const hrs = (h) => h == null ? "—" : h < 1 ? nf0.format(h * 60) + " mnt" : h < 48 ? nf1.format(h) + " jam" : nf1.format(h / 24) + " hari";
+let MODE = null, PERIOD = "all", D = null;
+const PERIODS = [["all", "Semua"], ["90d", "90 hari"], ["30d", "30 hari"], ["7d", "7 hari"]];
+
+function tip(el, html, x, y) {
+  let t = el.querySelector(".tip");
+  if (!t) { t = document.createElement("div"); t.className = "tip"; el.appendChild(t); }
+  t.innerHTML = html; t.style.display = "block";
+  t.style.left = Math.max(0, Math.min(el.clientWidth - t.offsetWidth, x - t.offsetWidth / 2)) + "px";
+  t.style.top = Math.max(0, y - t.offsetHeight - 10) + "px";
+}
+function untip(el) { const t = el.querySelector(".tip"); if (t) t.style.display = "none"; }
+function niceTicks(min, max, n = 4) {
+  if (min === max) { min -= 1; max += 1; }
+  const span = max - min, m = Math.pow(10, Math.floor(Math.log10(span / n)));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * m).find((s) => span / s <= n) || 10 * m;
+  const out = []; for (let v = Math.floor(min / step) * step; v <= Math.ceil(max / step) * step + step / 2; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+const shortRp = (v) => { const a = Math.abs(v), s = v < 0 ? "−" : ""; return a >= 1e6 ? s + nf1.format(a / 1e6) + " jt" : a >= 1e3 ? s + nf0.format(a / 1e3) + " rb" : s + nf0.format(a); };
+
+/* ---------------- KPI & saran ---------------- */
+function renderKpis(s) {
+  if (!s.n) { $("kpis").innerHTML = `<div class="card kpi"><div class="label">Transaksi selesai</div><div class="value">0</div><div class="sub">belum ada data pada periode ini</div></div>`; return; }
+  const k = [
+    ["Transaksi selesai", nf0.format(s.n), 0, `${s.wins} untung · ${s.n - s.wins} rugi`],
+    ["Win rate", nf0.format(s.win_rate) + "%", 0, s.profit_factor == null ? "profit factor —" : "profit factor " + nf2.format(s.profit_factor)],
+    ["Total PnL", rp(s.pnl, true), s.pnl, "setelah semua biaya"],
+    ["Rata-rata per transaksi", rp(s.avg_pnl, true), s.avg_pnl, pct(s.avg_pct)],
+    ["Rata-rata untung / rugi", rp(s.avg_win, true), 0, "rugi rata-rata " + rp(s.avg_loss, true)],
+    ["Fee & pajak dibayar", rp(s.fees), 0, s.gross_before_fees > 0 ? nf0.format(s.fees / s.gross_before_fees * 100) + "% dari untung kotor" : "untung kotor " + rp(s.gross_before_fees, true)],
+    ["Rata-rata lama tahan", hrs(s.avg_hold_h), 0, ""],
+  ];
+  $("kpis").innerHTML = k.map(([l, v, sg, sub]) => `<div class="card kpi"><div class="label">${l}</div><div class="value ${cls(sg)}">${sg ? `<span class="ar">${arrow(sg).trim()}</span>` : ""}${v}</div><div class="sub">${esc(sub)}</div></div>`).join("");
+}
+function renderSugg(list) {
+  const ic = { bad: "✕", warn: "▲", info: "●", good: "✓" };
+  $("sugg").innerHTML = list.map((g) => `<div class="sg ${g.level}"><span class="ic" aria-hidden="true">${ic[g.level]}</span>
+    <span class="t">${esc(g.title)}${g.weak && g.level !== "info" ? '<span class="weak">data masih sedikit</span>' : ""}</span>
+    <span class="d">${esc(g.detail)}</span>
+    <span class="m">berdasarkan ${g.n} transaksi</span></div>`).join("");
+}
+function renderCompare(c) {
+  if (!c || (!c.before.n && !c.after.n)) { $("compare-card").hidden = true; return; }
+  $("compare-card").hidden = false;
+  $("compare-sub").textContent = "Perubahan pengaturan terakhir: " + new Date(c.since * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium", timeStyle: "short" }) + " WIB. Dibandingkan berdasarkan waktu pembelian.";
+  const row = (l, f) => `<tr><td>${l}</td><td class="num">${f(c.before)}</td><td class="num">${f(c.after)}</td></tr>`;
+  const g = (s, f) => s.n ? f(s) : "—";
+  $("compare").innerHTML = `<table><thead><tr><th></th><th class="num">Sebelum</th><th class="num">Sesudah</th></tr></thead><tbody>
+    ${row("Transaksi", (s) => nf0.format(s.n || 0))}
+    ${row("Win rate", (s) => g(s, (s) => nf0.format(s.win_rate) + "%"))}
+    ${row("Total PnL", (s) => g(s, (s) => `<span class="${cls(s.pnl)}">${rp(s.pnl, true)}</span>`))}
+    ${row("Rata-rata per transaksi", (s) => g(s, (s) => `<span class="${cls(s.avg_pct)}">${pct(s.avg_pct)}</span>`))}
+    ${row("Profit factor", (s) => g(s, (s) => s.profit_factor == null ? "—" : nf2.format(s.profit_factor)))}
+    </tbody></table>${c.after.n && c.after.n < 30 ? '<div class="help" style="margin-top:6px">Data sesudah perubahan masih sedikit — tunggu lebih banyak transaksi sebelum menyimpulkan.</div>' : ""}`;
+}
+
+/* ---------------- tabel kelompok ---------------- */
+function table(el, rows, label, fmtKey) {
+  if (!rows.length) { $(el).innerHTML = `<div class="muted">Belum ada data${el === "t-rsi" || el === "t-set" ? " (tercatat untuk transaksi baru)" : ""}.</div>`; return; }
+  $(el).innerHTML = `<table><thead><tr><th>${label}</th><th class="num">Transaksi</th><th class="num">Win rate</th><th class="num">Total PnL</th><th class="num">Rata-rata</th><th class="num">PF</th></tr></thead><tbody>${
+    rows.map((g) => `<tr><td>${esc(fmtKey ? fmtKey(g) : g.key)}${g.n < 8 ? ' <span class="muted" title="sampel kecil">·</span>' : ""}</td><td class="num">${g.n}</td>
+      <td class="num">${nf0.format(g.win_rate)}%</td><td class="num ${cls(g.pnl)}">${arrow(g.pnl)}${rp(g.pnl, true)}</td>
+      <td class="num ${cls(g.avg_pct)}">${pct(g.avg_pct)}</td><td class="num">${g.profit_factor == null ? "—" : nf2.format(g.profit_factor)}</td></tr>`).join("")
+  }</tbody></table>`;
+}
+
+/* ---------------- grafik ---------------- */
+function chartPairs(rows) {
+  const el = $("c-pair");
+  if (!rows.length) { el.innerHTML = `<div class="empty">Belum ada transaksi selesai.</div>`; return; }
+  rows = [...rows].sort((a, b) => b.pnl - a.pnl).slice(0, 12);
+  const W = el.clientWidth || 400, H = el.clientHeight || 240, M = { l: 78, r: 16, t: 6, b: 22 };
+  const lo = Math.min(0, ...rows.map((r) => r.pnl)), hi = Math.max(0, ...rows.map((r) => r.pnl));
+  const ticks = niceTicks(lo, hi, 4), a = ticks[0], b = ticks[ticks.length - 1];
+  const xOf = (v) => M.l + ((v - a) / (b - a)) * (W - M.l - M.r);
+  const slot = (H - M.t - M.b) / rows.length, bh = Math.min(22, slot - 4);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="PnL per pair">`;
+  ticks.forEach((t) => { const x = xOf(t); s += `<line x1="${x}" x2="${x}" y1="${M.t}" y2="${H - M.b}" stroke="var(--grid)"/><text x="${x}" y="${H - 6}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${shortRp(t)}</text>`; });
+  const x0 = xOf(0);
+  rows.forEach((r, i) => {
+    const y = M.t + i * slot + (slot - bh) / 2, x1 = xOf(r.pnl), w = Math.max(1, Math.abs(x1 - x0)), rr = Math.min(4, w / 2);
+    const col = r.pnl >= 0 ? "var(--series-1)" : "var(--neg)";
+    const path = r.pnl >= 0
+      ? `M${x0},${y} H${x0 + w - rr} Q${x0 + w},${y} ${x0 + w},${y + rr} V${y + bh - rr} Q${x0 + w},${y + bh} ${x0 + w - rr},${y + bh} H${x0} Z`
+      : `M${x0},${y} H${x0 - w + rr} Q${x0 - w},${y} ${x0 - w},${y + rr} V${y + bh - rr} Q${x0 - w},${y + bh} ${x0 - w + rr},${y + bh} H${x0} Z`;
+    s += `<path d="${path}" fill="${col}" data-i="${i}"/>`;
+    s += `<text x="${M.l - 8}" y="${y + bh / 2 + 4}" font-size="11.5" text-anchor="end" fill="var(--text-2)">${esc(r.key.toUpperCase())}</text>`;
+  });
+  s += `<line x1="${x0}" x2="${x0}" y1="${M.t}" y2="${H - M.b}" stroke="var(--axis)"/>`;
+  s += `<rect class="hit" x="0" y="0" width="${W}" height="${H - M.b}" fill="transparent"/></svg>`;
+  el.innerHTML = s;
+  el.querySelector(".hit").addEventListener("mousemove", (ev) => {
+    const y = ev.clientY - el.getBoundingClientRect().top, i = Math.floor((y - M.t) / slot);
+    const r = rows[i]; if (!r) return untip(el);
+    tip(el, `<b>${esc(r.key.toUpperCase())}</b><br>${r.n} transaksi · win rate ${nf0.format(r.win_rate)}%<br>total <b class="${cls(r.pnl)}">${rp(r.pnl, true)}</b> · rata-rata ${pct(r.avg_pct)}`, xOf(r.pnl), M.t + i * slot);
+  });
+  el.querySelector(".hit").addEventListener("mouseleave", () => untip(el));
+}
+
+function chartDist(vals) {
+  const el = $("c-dist");
+  if (!vals.length) { el.innerHTML = `<div class="empty">Belum ada transaksi selesai.</div>`; return; }
+  const lo = Math.floor(Math.min(...vals, -1)), hi = Math.ceil(Math.max(...vals, 1));
+  let step = Math.max(0.5, Math.ceil((hi - lo) / 16 * 2) / 2);
+  const bins = [];
+  for (let v = Math.floor(lo / step) * step; v < hi; v += step) bins.push({ a: v, b: v + step, n: 0 });
+  vals.forEach((v) => { const b = bins.find((b) => v >= b.a && v < b.b) || bins[bins.length - 1]; b.n++; });
+  const W = el.clientWidth || 400, H = el.clientHeight || 240, M = { l: 34, r: 10, t: 8, b: 24 };
+  const maxN = Math.max(...bins.map((b) => b.n)), yt = niceTicks(0, maxN, 4).filter((t) => Number.isInteger(t));
+  const top = yt[yt.length - 1] || 1;
+  const xOf = (v) => M.l + ((v - bins[0].a) / (bins[bins.length - 1].b - bins[0].a)) * (W - M.l - M.r);
+  const yOf = (n) => M.t + (1 - n / top) * (H - M.t - M.b);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sebaran hasil transaksi">`;
+  yt.forEach((t) => { const y = yOf(t); s += `<line x1="${M.l}" x2="${W - M.r}" y1="${y}" y2="${y}" stroke="var(--grid)"/><text x="${M.l - 6}" y="${y + 4}" font-size="10.5" text-anchor="end" fill="var(--muted)">${t}</text>`; });
+  bins.forEach((b, i) => {
+    if (!b.n) return;
+    const x = xOf(b.a) + 1, w = Math.max(2, xOf(b.b) - xOf(b.a) - 2), y = yOf(b.n), h = yOf(0) - y, r = Math.min(4, w / 2, h);
+    const col = b.b <= 0 ? "var(--neg)" : b.a >= 0 ? "var(--series-1)" : "var(--axis)";
+    s += `<path d="M${x},${yOf(0)} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${yOf(0)} Z" fill="${col}"/>`;
+  });
+  const z = xOf(0);
+  s += `<line x1="${z}" x2="${z}" y1="${M.t}" y2="${H - M.b}" stroke="var(--text-2)" stroke-dasharray="3 3"/>`;
+  [bins[0].a, 0, bins[bins.length - 1].b].forEach((v) => (s += `<text x="${xOf(v)}" y="${H - 6}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${v > 0 ? "+" : ""}${nf1.format(v)}%</text>`));
+  s += `<rect class="hit" x="${M.l}" y="0" width="${W - M.l - M.r}" height="${H}" fill="transparent"/></svg>`;
+  el.innerHTML = s;
+  el.querySelector(".hit").addEventListener("mousemove", (ev) => {
+    const x = ev.clientX - el.getBoundingClientRect().left;
+    const b = bins.find((b) => x >= xOf(b.a) && x < xOf(b.b)); if (!b) return untip(el);
+    tip(el, `${nf1.format(b.a)}% s/d ${nf1.format(b.b)}%<br><b>${b.n}</b> transaksi`, (xOf(b.a) + xOf(b.b)) / 2, yOf(b.n));
+  });
+  el.querySelector(".hit").addEventListener("mouseleave", () => untip(el));
+}
+
+function chartScatter(pts, cfg) {
+  const el = $("c-scatter");
+  if (!pts.length) { el.innerHTML = `<div class="empty">Data ini mulai tercatat untuk transaksi baru (setelah pembaruan). Tunggu beberapa transaksi selesai.</div>`; return; }
+  const W = el.clientWidth || 600, H = el.clientHeight || 300, M = { l: 44, r: 14, t: 10, b: 30 };
+  const xs = pts.map((p) => p.mae), ys = pts.map((p) => p.mfe);
+  const xt = niceTicks(Math.min(...xs, -(cfg.sl || 0) - 0.5), 0, 5), yt = niceTicks(0, Math.max(...ys, (cfg.act || 0) + 0.5), 5);
+  const xa = xt[0], xb = xt[xt.length - 1], ya = yt[0], yb = yt[yt.length - 1];
+  const xOf = (v) => M.l + ((v - xa) / (xb - xa)) * (W - M.l - M.r), yOf = (v) => M.t + (1 - (v - ya) / (yb - ya)) * (H - M.t - M.b);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Kenaikan tertinggi vs penurunan terdalam">`;
+  xt.forEach((t) => { const x = xOf(t); s += `<line x1="${x}" x2="${x}" y1="${M.t}" y2="${H - M.b}" stroke="var(--grid)"/><text x="${x}" y="${H - 12}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${nf1.format(t)}%</text>`; });
+  yt.forEach((t) => { const y = yOf(t); s += `<line x1="${M.l}" x2="${W - M.r}" y1="${y}" y2="${y}" stroke="var(--grid)"/><text x="${M.l - 6}" y="${y + 4}" font-size="10.5" text-anchor="end" fill="var(--muted)">+${nf1.format(t)}%</text>`; });
+  s += `<text x="${W - M.r}" y="${H - 0}" font-size="10.5" text-anchor="end" fill="var(--text-2)">← penurunan terdalam setelah beli</text>`;
+  s += `<text x="${M.l + 4}" y="${M.t + 10}" font-size="10.5" fill="var(--text-2)">↑ kenaikan tertinggi</text>`;
+  if (cfg.sl) { const x = xOf(-cfg.sl); s += `<line x1="${x}" x2="${x}" y1="${M.t}" y2="${H - M.b}" stroke="var(--critical)" stroke-dasharray="4 3"/>`; }
+  if (cfg.act) { const y = yOf(cfg.act); s += `<line x1="${M.l}" x2="${W - M.r}" y1="${y}" y2="${y}" stroke="var(--good)" stroke-dasharray="4 3"/>`; }
+  pts.forEach((p, i) => {
+    const x = xOf(p.mae), y = yOf(p.mfe);
+    s += p.pnl_pct > 0
+      ? `<circle cx="${x}" cy="${y}" r="4.5" fill="var(--series-1)" stroke="var(--surface)" stroke-width="1.5"/>`
+      : `<path d="M${x} ${y - 5.5} L${x + 5} ${y + 3.5} L${x - 5} ${y + 3.5} Z" fill="var(--neg)" stroke="var(--surface)" stroke-width="1.5"/>`;
+  });
+  s += `<rect class="hit" x="${M.l}" y="0" width="${W - M.l - M.r}" height="${H - M.b}" fill="transparent"/></svg>`;
+  el.innerHTML = s;
+  el.querySelector(".hit").addEventListener("mousemove", (ev) => {
+    const r = el.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    let best = null, bd = 144;
+    pts.forEach((p) => { const d = (xOf(p.mae) - mx) ** 2 + (yOf(p.mfe) - my) ** 2; if (d < bd) { bd = d; best = p; } });
+    if (!best) return untip(el);
+    const REASONS = { take_profit: "Take profit", stop_loss: "Stop loss", trailing_stop: "Trailing stop", trend_reversal: "Tren berbalik", max_hold_time: "Batas waktu tahan", manual_sellall: "Jual semua" };
+    tip(el, `<b>${esc(best.pair.toUpperCase())}</b> · ${esc(REASONS[best.reason] || best.reason)}<br>hasil <b class="${cls(best.pnl_pct)}">${pct(best.pnl_pct)}</b><br>sempat naik ${pct(best.mfe)} · turun ${pct(best.mae)}<br><span class="muted">${new Date(best.ts * 1000).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium", timeStyle: "short" })}</span>`, xOf(best.mae), yOf(best.mfe));
+  });
+  el.querySelector(".hit").addEventListener("mouseleave", () => untip(el));
+}
+
+/* ---------------- muat ---------------- */
+let CFG = {};
+function render() {
+  const d = D;
+  $("sub").textContent = `${d.mode === "live" ? "LIVE" : "Simulasi"} · ${d.summary.n || 0} transaksi selesai pada periode ini` +
+    (d.summary.n ? ` · ${d.n_rich} dengan data lengkap (kondisi saat beli, naik/turun selama posisi)` : "");
+  renderKpis(d.summary);
+  renderSugg(d.suggestions);
+  renderCompare(d.compare);
+  chartPairs(d.by_pair);
+  chartDist(d.distribution);
+  chartScatter(d.scatter, CFG);
+  table("t-pair", d.by_pair, "Pair", (g) => g.key.toUpperCase());
+  table("t-reason", d.by_reason, "Alasan jual", (g) => g.label);
+  table("t-hour", d.by_hour, "Jam beli");
+  table("t-hold", d.by_hold, "Lama tahan");
+  table("t-rsi", d.by_rsi, "RSI");
+  table("t-set", d.by_settings, "Pengaturan");
+  $("footer").textContent = "Kelompok bertanda · berisi kurang dari 8 transaksi — belum bisa dijadikan dasar keputusan.";
+}
+async function load() {
+  try {
+    const q = `/api/analysis?period=${PERIOD}` + (MODE ? `&mode=${MODE}` : "");
+    D = await App.api("GET", q);
+    MODE = D.mode; $("mode").value = MODE;
+    render();
+  } catch (e) { $("sub").textContent = "Gagal memuat: " + e.message; }
+}
+function renderPeriods() {
+  $("periods").innerHTML = PERIODS.map(([k, l]) => `<button class="${k === PERIOD ? "active" : ""}" data-p="${k}">${l}</button>`).join("");
+  $("periods").querySelectorAll("button").forEach((b) => (b.onclick = () => { PERIOD = b.dataset.p; renderPeriods(); load(); }));
+}
+$("mode").onchange = () => { MODE = $("mode").value; load(); };
+let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => D && render(), 150); });
+App.nav("analysis").then(async () => {
+  try { const s = await App.api("GET", "/api/settings"); CFG = { sl: s.sections.exits.stop_loss_pct, act: s.sections.exits.trailing_activation_pct }; } catch (e) {}
+  renderPeriods(); load();
+}).catch(() => {});
+</script>
+</body>
+</html>

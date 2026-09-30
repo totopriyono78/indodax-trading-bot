@@ -50,6 +50,8 @@ class Position:
     client_order_id: str = ""
     reason: str = ""
     dust: bool = False         # nilai di bawah minimum order, tidak bisa dijual via bot
+    lowest: float = 0.0        # harga terendah sejak dibeli (untuk analisis penurunan terdalam)
+    entry_ctx: Dict = field(default_factory=dict)   # kondisi pasar & pengaturan saat beli
 
     @property
     def value_note(self) -> str:
@@ -126,7 +128,7 @@ class StateStore:
         return rows[-limit:] if limit else rows
 
     def log_trade(self, *, pair, side, qty, price, idr, fee_idr=0.0, pnl_idr=None, pnl_pct=None,
-                  reason="", order_id=""):
+                  reason="", order_id="", meta=None):
         new = not self.trades_path.exists()
         with self.trades_path.open("a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
@@ -143,6 +145,13 @@ def _state_from_dict(raw: dict) -> BotState:
     st = BotState(**{k: v for k, v in raw.items() if k != "positions" and k in BotState.__dataclass_fields__})
     st.positions = {k: Position(**v) for k, v in raw.get("positions", {}).items()}
     return st
+
+
+def _loads(v):
+    try:
+        return json.loads(v) if v else {}
+    except (TypeError, ValueError):
+        return {}
 
 
 TRADE_KEYS = ["waktu_wib", "mode", "pair", "sisi", "qty", "harga", "idr", "fee_idr", "pnl_idr", "pnl_pct",
@@ -186,8 +195,8 @@ class DbStateStore:
 
     # ---- jurnal transaksi
     def log_trade(self, *, pair, side, qty, price, idr, fee_idr=0.0, pnl_idr=None, pnl_pct=None,
-                  reason="", order_id=""):
-        self.db.add_trade(ts=time.time(), mode=self.mode, pair=pair, side=side, qty=float(qty),
+                  reason="", order_id="", meta=None):
+        self.db.add_trade(meta=json.dumps(meta, default=float) if meta else None,ts=time.time(), mode=self.mode, pair=pair, side=side, qty=float(qty),
                           price=float(price), idr=float(idr), fee_idr=float(fee_idr or 0),
                           pnl_idr=None if pnl_idr is None else float(pnl_idr),
                           pnl_pct=None if pnl_pct is None else float(pnl_pct), reason=reason or "",
@@ -204,6 +213,7 @@ class DbStateStore:
                 "pnl_idr": "" if r["pnl_idr"] is None else f"{r['pnl_idr']:.0f}",
                 "pnl_pct": "" if r["pnl_pct"] is None else f"{r['pnl_pct']:.2f}",
                 "alasan": r["reason"], "order_id": r["order_id"], "ts": r["ts"],
+                "meta": _loads(r.get("meta")),
             })
         return out
 

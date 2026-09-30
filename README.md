@@ -143,6 +143,23 @@ Pengaman tambahan: tidak bisa pindah dari LIVE ke SIMULASI selama masih ada posi
 dan jika pengaturan di database rusak, bot tetap jalan memakai pengaturan valid terakhir dengan pembelian
 di-pause agar stop loss posisi terbuka tetap bekerja.
 
+### Halaman Analisis
+
+Menu **Analisis** mengolah jurnal transaksi untuk mengevaluasi dan memperbaiki strategi:
+
+- ringkasan: win rate, total & rata-rata PnL, profit factor, fee yang dibayar, rata-rata lama tahan;
+- **saran perbaikan otomatis** (mis. pair yang konsisten rugi, stop loss terlalu sempit / bisa diperketat,
+  posisi rugi yang sempat untung → trailing perlu lebih dekat, RSI beli yang terlalu tinggi, biaya terlalu besar),
+  masing-masing dengan jumlah transaksi pendukung dan tanda "data masih sedikit";
+- perbandingan **sebelum vs sesudah** perubahan pengaturan terakhir;
+- grafik PnL per pair, sebaran hasil, dan **kenaikan tertinggi vs penurunan terdalam** tiap posisi;
+- tabel per pair, alasan jual, jam beli, lama tahan, RSI saat beli, dan kombinasi SL/TP.
+
+Sejak versi ini setiap transaksi mencatat kondisi saat beli (RSI, jarak ke EMA, spread, volume), pengaturan
+SL/TP yang berlaku, serta kenaikan tertinggi & penurunan terdalam selama posisi terbuka. Transaksi lama tetap
+dihitung di ringkasan, tetapi tidak punya data rinci tersebut. Uji setiap perubahan dengan `backtest --sweep`
+dan mode simulasi sebelum dipakai LIVE.
+
 ### Siapkan API key TAPI v2
 
 1. Login Indodax → **https://indodax.com/trade_api** → buat key **TAPI v2** (key TAPI lama tidak bisa dipakai).
@@ -254,6 +271,7 @@ bot/
   db.py          database: pengaturan, kredensial terenkripsi, user, sesi, audit
   settings.py    pengaturan dari database + pengaturan per pair
   web.py         dashboard web: login, monitoring, pengaturan (+ *.html, static/)
+  analysis.py    statistik & saran perbaikan dari jurnal transaksi
   supervisor.py  `bot all`: dashboard + bot dalam satu container (Railway)
 tests/           uji otomatis dengan data & API palsu (python -m pytest)
 deploy/          install.sh & layanan systemd

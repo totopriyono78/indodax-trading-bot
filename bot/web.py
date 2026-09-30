@@ -31,7 +31,7 @@ from .state import WIB, DbStateStore, StateStore, today_wib
 log = logging.getLogger("bot.web")
 HERE = Path(__file__).parent
 PAGES = {"/": "web_ui.html", "/index.html": "web_ui.html", "/settings": "settings.html",
-         "/login": "login.html", "/setup": "login.html"}
+         "/login": "login.html", "/setup": "login.html", "/analysis": "analysis.html"}
 STATIC = {"/static/app.css": ("static/app.css", "text/css; charset=utf-8"),
           "/static/app.js": ("static/app.js", "application/javascript; charset=utf-8")}
 
@@ -462,6 +462,21 @@ def make_handler(ctx, setup_token: dict):
                     return self._json({"pairs": market.pairs()})
                 if path == "/api/audit":
                     return self._json({"items": db.recent_audit(60)})
+                if path == "/api/analysis":
+                    from urllib.parse import parse_qs, urlparse
+                    from .analysis import build_analysis
+                    qs = parse_qs(urlparse(self.path).query)
+                    cfg = cfg_now()
+                    mode = (qs.get("mode") or [cfg["mode"]])[0]
+                    period = (qs.get("period") or ["all"])[0]
+                    if mode not in ("paper", "live") or period not in ("all", "7d", "30d", "90d"):
+                        return self._json({"error": "parameter tidak valid"}, 400)
+                    last_change = next((a["ts"] for a in db.recent_audit(500)
+                                        if a["action"].startswith("settings_")), None)
+                    data = build_analysis(store_for(mode).read_trades(), cfg, lambda p: pair_cfg(cfg, p),
+                                          period, last_change)
+                    data.update({"mode": mode, "current_mode": cfg["mode"]})
+                    return self._json(data)
                 if path == "/api/chart":
                     from urllib.parse import parse_qs, urlparse
                     qs = parse_qs(urlparse(self.path).query)

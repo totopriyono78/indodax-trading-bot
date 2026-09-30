@@ -85,6 +85,7 @@ trades_t = Table(
     Column("pnl_pct", Float),
     Column("reason", String(255), nullable=False, default=""),
     Column("order_id", String(128), nullable=False, default=""),
+    Column("meta", Text),          # JSON: kondisi saat beli, kenaikan tertinggi/penurunan terdalam, dll.
 )
 logs_t = Table(
     "logs", metadata,
@@ -168,9 +169,18 @@ class Database:
 
     def create_all(self) -> None:
         metadata.create_all(self.engine)
+        self._migrate()
         if self.url.startswith("sqlite"):
             with self.engine.begin() as c:
                 c.exec_driver_sql("PRAGMA journal_mode=WAL")
+
+    def _migrate(self) -> None:
+        """Tambah kolom baru pada tabel lama (create_all tidak mengubah tabel yang sudah ada)."""
+        from sqlalchemy import inspect
+        cols = {c["name"] for c in inspect(self.engine).get_columns("trades")}
+        if "meta" not in cols:
+            with self.engine.begin() as c:
+                c.exec_driver_sql("ALTER TABLE trades ADD COLUMN meta TEXT")
 
     # ------------------------------------------------------------ settings
     def get_settings(self) -> dict:

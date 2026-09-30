@@ -27,7 +27,7 @@ def _id_num(x: float, decimals: int) -> str:
 
 def rp(x: float) -> str:
     """Format Rupiah gaya Indonesia: Rp1.234.567"""
-    return ("-" if x < 0 else "") + "Rp" + _id_num(abs(x), 0)
+    return ("−" if x < 0 else "") + "Rp" + _id_num(abs(x), 0)
 
 
 def px(p: float) -> str:
@@ -240,6 +240,8 @@ class Engine:
             price = q.bid if q.bid > 0 else q.last
             if price > pos.highest:
                 pos.highest = price
+            if not pos.lowest or price < pos.lowest:
+                pos.lowest = price
             reason = self.exits_for(pair).check(pos.entry_price, pos.highest, price, pos.opened_at, now)
             if reason:
                 try:
@@ -279,7 +281,7 @@ class Engine:
             if in_pos and sig.action == "exit" and not self.state.positions[pair].dust:
                 self._close(pair, q, "trend_reversal")
             elif not in_pos and sig.action == "buy":
-                self._try_enter(pair, q, sig.reason)
+                self._try_enter(pair, q, sig.reason, sig, candles[-1].time)
 
         self._heartbeat(now, quotes)
         self.store.save(self.state)
@@ -308,7 +310,23 @@ class Engine:
             return f"volume 24 jam {rp(q.vol_idr)} terlalu kecil"
         return None
 
-    def _try_enter(self, pair: str, q: Quote, why: str) -> None:
+    def _entry_context(self, pair: str, q: Quote, sig, candle_time) -> dict:
+        """Catat kondisi pasar & pengaturan saat beli — untuk halaman Analisis."""
+        pc = pair_cfg(self.cfg, pair)
+        e, r = pc["exits"], pc["risk"]
+        ctx = {"timeframe": self.tf, "candle_time": candle_time, "spread_pct": q.spread_pct, "vol_idr": q.vol_idr,
+               "sl_pct": e["stop_loss_pct"], "tp_pct": e["take_profit_pct"], "trail_pct": e["trailing_stop_pct"],
+               "trail_act_pct": e["trailing_activation_pct"], "max_hold_h": e["max_hold_hours"],
+               "idr_per_trade": r["idr_per_trade"]}
+        if sig is not None and sig.close:
+            ctx.update({"rsi": sig.rsi, "close": sig.close})
+            for k in ("ema_fast", "ema_slow", "ema_trend"):
+                v = getattr(sig, k, None)
+                if v:
+                    ctx[k + "_dist_pct"] = (sig.close / v - 1) * 100   # jarak harga ke EMA (%)
+        return ctx
+
+    def _try_enter(self, pair: str, q: Quote, why: str, sig=None, candle_time=None) -> None:
         block = self._entry_block_reason(pair, q)
         if block:
             log.info("%s: sinyal beli diabaikan — %s", pair, block)
@@ -334,9 +352,11 @@ class Engine:
         self.state.positions[pair] = Position(
             pair=pair, qty=fill.qty, entry_price=fill.avg_price, cost_idr=fill.net_idr,
             opened_at=now, highest=fill.avg_price, mode=self.broker.mode,
-            order_id=fill.order_id, client_order_id=fill.client_order_id, reason=why)
+            order_id=fill.order_id, client_order_id=fill.client_order_id, reason=why,
+            lowest=fill.avg_price, entry_ctx=self._entry_context(pair, q, sig, candle_time))
         self.store.log_trade(pair=pair, side="BUY", qty=fill.qty, price=fill.avg_price, idr=fill.net_idr,
-                             fee_idr=fill.fee_idr, reason=why, order_id=fill.order_id)
+                             fee_idr=fill.fee_idr, reason=why, order_id=fill.order_id,
+                             meta=self.state.positions[pair].entry_ctx)
         self.store.save(self.state)
         stop, _, tp = self.exits_for(pair).levels(fill.avg_price, fill.avg_price)
         self.notify.send(
@@ -387,9 +407,20 @@ class Engine:
         else:
             cool = max(cool, now + self.risk["cooldown_minutes_after_loss"] * 60)
         self.state.cooldown_until[pair] = max(self.state.cooldown_until.get(pair, 0), cool)
+        low = min(pos.lowest or pos.entry_price, fill.avg_price)
+        high = max(pos.highest, fill.avg_price)
+        meta = dict(pos.entry_ctx or {})
+        meta.update({
+            "entry_time": pos.opened_at, "entry_price": pos.entry_price, "hold_s": now - pos.opened_at,
+            "mfe_pct": (high / pos.entry_price - 1) * 100,     # kenaikan tertinggi selama posisi
+            "mae_pct": (low / pos.entry_price - 1) * 100,      # penurunan terdalam selama posisi
+            "exit_pct": (fill.avg_price / pos.entry_price - 1) * 100,
+            "fees_idr": fill.fee_idr + (pos.cost_idr - pos.qty * pos.entry_price if pos.cost_idr else 0),
+            "cost_idr": cost,
+        })
         self.store.log_trade(pair=pair, side="SELL", qty=fill.qty, price=fill.avg_price, idr=fill.net_idr,
                              fee_idr=fill.fee_idr, pnl_idr=pnl, pnl_pct=pnl_pct, reason=reason,
-                             order_id=fill.order_id)
+                             order_id=fill.order_id, meta=meta)
         self.store.save(self.state)
         held_h = (now - pos.opened_at) / 3600
         self.notify.send(
